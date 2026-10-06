@@ -1,0 +1,5 @@
+#!/bin/sh
+[ "$ACTION" = "add" -o "$ACTION" = "update" -o "$ACTION" = "remove" ] || exit 0
+logger -t access-shield-stats "dhcp $ACTION $MACADDR $IPADDR — rebuilding"
+sleep 2
+/etc/init.d/access-shield-stats reload >/dev/null 2>&1 &

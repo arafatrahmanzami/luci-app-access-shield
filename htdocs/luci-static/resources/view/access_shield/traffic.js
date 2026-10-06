@@ -5,11 +5,19 @@
 'require rpc';
 'require poll';
 
-var callListDevices = rpc.declare({ object: 'luci.access_shield', method: 'list_devices',       expect: {} });
-var callTraffic     = rpc.declare({ object: 'luci.access_shield', method: 'traffic_per_device', expect: {} });
+var callListDevices = rpc.declare({ object: 'luci.access_shield', method: 'list_devices' });
+var callTraffic     = rpc.declare({ object: 'luci.access_shield', method: 'traffic_stats' });
 var callGetLimits   = rpc.declare({ object: 'luci.access_shield', method: 'get_speed_limits' });
 var callListSubnets = rpc.declare({ object: 'luci.access_shield', method: 'list_subnets' });
 var callSetSubnetLimit = rpc.declare({ object: 'luci.access_shield', method: 'set_subnet_limit', params: ['cidr','device','label','dl_val','dl_unit','ul_val','ul_unit'] });
+
+function unwrap(d, k) {
+    if (!d) return [];
+    if (Array.isArray(d)) return d;
+    if (typeof d === 'object' && Array.isArray(d[k])) return d[k];
+    if (typeof d === 'string') { try { var p = JSON.parse(d); return p[k] || []; } catch(e) {} }
+    return [];
+}
 
 function fmtRate(bps) {
     bps = parseInt(bps, 10) || 0;
@@ -19,65 +27,52 @@ function fmtRate(bps) {
     return (bps / 1000000000).toFixed(2) + ' GB/s';
 }
 
-
-function unwrapList(d, k) {
-    if (!d) return [];
-    if (Array.isArray(d)) return d;
-    if (typeof d === 'object' && Array.isArray(d[k])) return d[k];
-    if (typeof d === 'string') { try { var p = JSON.parse(d); return p[k] || []; } catch(e) {} }
-    return [];
-}
-
-function fmtBytes(bps, interval) {
-    var bytes = bps * interval;
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
-    return (bytes / 1073741824).toFixed(2) + ' GB';
+function normMac(m) {
+    return (m || '').toLowerCase().replace(/:/g, '');
 }
 
 return view.extend({
     load: function() {
-        return Promise.all([ uci.load('access_shield'), callListDevices(), callTraffic(), callGetLimits(), callListSubnets() ]);
+        return Promise.all([
+            uci.load('access_shield'),
+            callListDevices(),
+            callTraffic(),
+            callGetLimits(),
+            callListSubnets()
+        ]);
     },
 
     render: function(data) {
-        var container = E('div', { 'id': 'access-shield-traffic' });
-        var interval = 5;
-        var currentDevices = (data[1] && data[1].devices) || [];
-        var currentTraffic = (data[2] && data[2].devices) || [];
-        var trafficInterval = (data[2] && data[2].interval) || 1;
-        var limits = unwrapList(data[3], 'limits');
+        var container = E('div', { 'id': 'traffic-page' });
+        var devices = unwrap(data[1], 'devices');
+        var traffic = data[2] || {};
+        var limits  = unwrap(data[3], 'limits');
+        var subnets = unwrap(data[4], 'subnets');
+        var pollInterval = 2;
 
-        function limitForDevice(mac) {
-            var m = (mac || '').toLowerCase();
-            var l = limits.find(function(x) { return (x.mac || '').toLowerCase() === m; });
+        function lookupRate(mac) {
+            var target = normMac(mac);
+            var list = unwrap(traffic, 'devices');
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].mac === target) return list[i];
+            }
+            return { up_bps: 0, down_bps: 0, total_bps: 0 };
+        }
+
+        function limitFor(mac) {
+            var target = (mac || '').toLowerCase();
+            var l = limits.find(function(x) { return (x.mac || '').toLowerCase() === target; });
             if (!l) return 'Unlimited';
             var dl = parseFloat(l.dl_val) > 0 ? l.dl_val + ' ' + l.dl_unit : '∞';
             var ul = parseFloat(l.ul_val) > 0 ? l.ul_val + ' ' + l.ul_unit : '∞';
             return '⬇ ' + dl + ' / ⬆ ' + ul;
         }
 
-        function deviceForIp(ip) {
-            for (var i = 0; i < currentDevices.length; i++) {
-                if (currentDevices[i].ipv4 === ip) return currentDevices[i];
-            }
-            return null;
-        }
-
-        function buildView() {
-            // Build rate map by IP
-            var rates = {};
-            currentTraffic.forEach(function(t) {
-                rates[t.ip] = t;
-            });
-
-            // Only show devices we know about (skip external IPs)
+        function buildDeviceTable() {
             var rows = [
                 E('tr', { 'class': 'tr table-titles' }, [
                     E('th', { 'class': 'th' }, _('Device')),
-                    E('th', { 'class': 'th' }, _('IP Address')),
-                    E('th', { 'class': 'th' }, _('MAC')),
+                    E('th', { 'class': 'th' }, _('IP')),
                     E('th', { 'class': 'th' }, _('Upload')),
                     E('th', { 'class': 'th' }, _('Download')),
                     E('th', { 'class': 'th' }, _('Total')),
@@ -85,87 +80,43 @@ return view.extend({
                 ])
             ];
 
-            var shown = 0;
-            currentDevices.forEach(function(d) {
-                var r = rates[d.ipv4] || { up_bps: 0, down_bps: 0, total_bps: 0 };
+            var active = devices.filter(function(d) { return d.mac && d.ipv4; });
+            active.sort(function(a, b) {
+                var aR = lookupRate(a.mac).total_bps || 0;
+                var bR = lookupRate(b.mac).total_bps || 0;
+                return bR - aR;
+            });
 
+            active.forEach(function(d) {
+                var r = lookupRate(d.mac);
+                var activeBar = r.total_bps > 0 ? '🟢' : '⚪';
                 rows.push(E('tr', { 'class': 'tr' }, [
-                    E('td', { 'class': 'td' }, [ d.hostname || '—' ]),
+                    E('td', { 'class': 'td' }, [ activeBar + ' ' + (d.hostname || d.mac) ]),
                     E('td', { 'class': 'td' }, [ d.ipv4 ]),
-                    E('td', { 'class': 'td', 'style': 'font-family:monospace;font-size:11px' }, [ d.mac ]),
                     E('td', { 'class': 'td' }, [ fmtRate(r.up_bps) ]),
                     E('td', { 'class': 'td' }, [ fmtRate(r.down_bps) ]),
-                    E('td', { 'class': 'td' }, [ fmtRate(r.total_bps) ]),
-                    E('td', { 'class': 'td', 'style': 'font-size:12px' }, [ limitForDevice(d.mac) ])
+                    E('td', { 'class': 'td', 'style': 'font-weight:bold' }, [ fmtRate(r.total_bps) ]),
+                    E('td', { 'class': 'td', 'style': 'font-size:12px' }, [ limitFor(d.mac) ])
                 ]));
-                shown++;
             });
 
-            if (shown === 0) {
-                rows.push(E('tr', { 'class': 'tr' }, [
-                    E('td', { 'class': 'td', 'colspan': 7, 'style': 'text-align:center;padding:20px;color:#888' },
-                        _('No client devices found. Check the Clients tab first.'))
-                ]));
-            }
-
-            return E('div', {}, [
-                E('div', { 'class': 'cbi-section', 'style': 'margin-bottom:1em' }, [
-                    E('button', {
-                        'class': 'btn cbi-button cbi-button-action',
-                        'click': function() { refresh(); }
-                    }, [ _('Refresh') ]),
-                    ' ',
-                    _('Refresh interval:'),
-                    ' ',
-                    E('select', {
-                        'style': 'padding:4px',
-                        'change': function(ev) { interval = parseInt(ev.target.value, 10); }
-                    }, [
-                        E('option', { 'value': '3',  'selected': interval === 3  }, '3 s'),
-                        E('option', { 'value': '5',  'selected': interval === 5  }, '5 s'),
-                        E('option', { 'value': '10', 'selected': interval === 10 }, '10 s'),
-                        E('option', { 'value': '30', 'selected': interval === 30 }, '30 s')
-                    ])
-                ]),
-                E('table', { 'class': 'table' }, rows),
-                E('p', { 'style': 'margin-top:1em;font-size:12px;color:#888' },
-                    _('Byte rates calculated from conntrack deltas. First view may show 0 until a second sample is taken. ' +
-                      'Speed limits are not yet enforced — coming in a future phase.'))
-            ]);
+            return E('table', { 'class': 'table' }, rows);
         }
 
-        function refresh() {
-            return Promise.all([ callListDevices(), callTraffic() ]).then(function(r) {
-                currentDevices = (r[0] && r[0].devices) || [];
-                currentTraffic = (r[1] && r[1].devices) || [];
-                trafficInterval = (r[1] && r[1].interval) || 1;
-                while (container.firstChild) container.removeChild(container.firstChild);
-                container.appendChild(buildView());
-            });
-        }
+        function buildSubnetSection() {
+            if (!subnets.length) return null;
 
-        // Initial paint
-        container.appendChild(buildView());
-
-        // Auto refresh
-        poll.add(function() {
-            return refresh();
-        }, 5);
-
-        var subnetContainer = E('div', { 'id': 'access-shield-subnets' });
-
-        function buildSubnetView(subs) {
             var rows = [
                 E('tr', { 'class': 'tr table-titles' }, [
                     E('th', { 'class': 'th' }, _('Bridge')),
-                    E('th', { 'class': 'th' }, _('Subnet (CIDR)')),
+                    E('th', { 'class': 'th' }, _('Subnet')),
                     E('th', { 'class': 'th' }, _('Download Limit')),
                     E('th', { 'class': 'th' }, _('Upload Limit')),
                     E('th', { 'class': 'th' }, '')
                 ])
             ];
 
-            subs.forEach(function(s) {
+            subnets.forEach(function(s) {
                 var dlv = E('input', { 'type': 'number', 'min': '0', 'step': 'any',
                     'value': s.dl_val || '', 'placeholder': _('Unlimited'),
                     'style': 'width:100px;padding:4px' });
@@ -190,51 +141,74 @@ return view.extend({
                         E('button', {
                             'class': 'btn cbi-button-action',
                             'style': 'font-size:11px;padding:3px 8px',
-                            'click': function() {
-                                callSetSubnetLimit(s.cidr, s.bridge, s.bridge, dlv.value, dlu.value, ulv.value, ulu.value)
+                            'click': ui.createHandlerFn(this, function() {
+                                return callSetSubnetLimit(s.cidr, s.bridge, s.bridge, dlv.value, dlu.value, ulv.value, ulu.value)
                                     .then(function() {
                                         ui.addNotification(null, E('p', {}, _('Subnet limit saved.')), 'info');
                                         return new Promise(function(r) { setTimeout(r, 800); });
                                     }).then(function() { window.location.reload(); });
-                            }
+                            })
                         }, _('Save'))
                     ])
                 ]));
             });
 
-            if (subs.length === 0) {
-                rows.push(E('tr', { 'class': 'tr' }, [
-                    E('td', { 'class': 'td', 'colspan': 5, 'style': 'text-align:center;padding:20px;color:#888' },
-                        _('No IPv4 bridges detected.'))
-                ]));
-            }
-
-            return E('table', { 'class': 'table' }, rows);
+            return E('div', { 'class': 'cbi-section' }, [
+                E('h3', {}, _('Per-Subnet Bandwidth Limits')),
+                E('table', { 'class': 'table' }, rows)
+            ]);
         }
 
-        container.parentNode && (function() {
-            var subs = unwrapList(data[4], 'subnets');
-            subnetContainer.appendChild(buildSubnetView(subs));
-        })();
+        function repaint() {
+            while (container.firstChild) container.removeChild(container.firstChild);
 
-        // Lazy-load subnets after the main view is built
-        setTimeout(function() {
-            callListSubnets().then(function(r) {
-                var subs = unwrapList(r, 'subnets');
-                while (subnetContainer.firstChild) subnetContainer.removeChild(subnetContainer.firstChild);
-                subnetContainer.appendChild(buildSubnetView(subs));
+            container.appendChild(E('div', {}, [
+                E('div', { 'class': 'cbi-section', 'style': 'margin-bottom:12px;display:flex;justify-content:space-between;align-items:center' }, [
+                    E('div', {}, [
+                        E('button', {
+                            'class': 'btn cbi-button-action',
+                            'click': function() { refresh(); }
+                        }, _('↻ Refresh')),
+                        ' ',
+                        _('Auto-refresh:'),
+                        ' ',
+                        (function() {
+                            var sel = E('select', {
+                                'style': 'padding:4px',
+                                'change': function(ev) { pollInterval = parseInt(ev.target.value, 10); }
+                            }, [
+                                E('option', { 'value': '1', 'selected': pollInterval === 1 ? true : null }, '1 s'),
+                                E('option', { 'value': '2', 'selected': pollInterval === 2 ? true : null }, '2 s'),
+                                E('option', { 'value': '5', 'selected': pollInterval === 5 ? true : null }, '5 s'),
+                                E('option', { 'value': '10', 'selected': pollInterval === 10 ? true : null }, '10 s')
+                            ]);
+                            return sel;
+                        })()
+                    ]),
+                    E('span', { 'style': 'font-size:12px;color:#888' },
+                        _('Sample: ') + (traffic.interval || 1) + _(' s'))
+                ]),
+                buildDeviceTable(),
+                buildSubnetSection()
+            ]));
+        }
+
+        function refresh() {
+            return Promise.all([ callListDevices(), callTraffic() ]).then(function(r) {
+                devices = unwrap(r[0], 'devices');
+                traffic = r[1] || {};
+                repaint();
             });
-        }, 100);
+        }
+
+        repaint();
+        poll.add(function() { return refresh(); }, pollInterval);
 
         return E('div', {}, [
             E('h2', {}, _('Access Shield')),
-            E('p', { 'style': 'opacity:0.85;font-size:0.95em;margin-top:-4px;margin-bottom:16px' }, _('Device Access Control & Traffic Monitor')),
-            E('p', {}, _('Per-device upload/download rates from conntrack. Auto-refreshes every 5 seconds.')),
-            container,
-            E('h3', { 'style': 'margin-top:2em' }, _('Per-Subnet Bandwidth Limits')),
-            E('p', { 'style': 'font-size:12px;color:#888' },
-                _('Aggregate caps per bridge. Applies to all traffic forwarded across the subnet. Individual device limits take precedence.')),
-            subnetContainer
+            E('p', { 'style': 'opacity:0.85;font-size:0.95em;margin-top:-4px;margin-bottom:16px' },
+                _('Device Access Control & Traffic Monitor — Live Traffic')),
+            container
         ]);
     },
 

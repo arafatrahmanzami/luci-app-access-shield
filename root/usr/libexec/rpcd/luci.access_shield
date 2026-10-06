@@ -981,6 +981,118 @@ EOS
     json_dump
 }
 
+do_traffic_stats() {
+    local NFT_TABLE="access_shield_stats"
+    local PREV="/tmp/access_shield_stats.prev"
+    local TS="/tmp/access_shield_stats.ts"
+    local CUR="/tmp/access_shield_stats.cur"
+    local RATES="/tmp/access_shield_stats.rates"
+
+    # 1. Snapshot: "mac dir bytes" space-separated
+    : > "$CUR"
+    if nft list table inet "$NFT_TABLE" >/dev/null 2>&1; then
+        nft list table inet "$NFT_TABLE" 2>/dev/null | awk '
+            {
+                mac=""; bytes=0; dir=""
+                i = index($0, "comment \"rx_")
+                if (i > 0) { dir = "rx"; mac = substr($0, i+12, 12) }
+                i = index($0, "comment \"tx_")
+                if (i > 0) { dir = "tx"; mac = substr($0, i+12, 12) }
+                i = index($0, "bytes ")
+                if (i > 0) {
+                    rest = substr($0, i+6)
+                    split(rest, a, " ")
+                    bytes = a[1] + 0
+                }
+                mac = tolower(mac)
+                if (mac != "" && dir != "")
+                    print mac, dir, bytes
+            }
+        ' >> "$CUR"
+    fi
+
+    # 2. Interval
+    local NOW PREV_TS INTERVAL
+    NOW=$(date +%s)
+    PREV_TS=0
+    [ -f "$TS" ] && PREV_TS=$(cat "$TS" 2>/dev/null || echo 0)
+    INTERVAL=$((NOW - PREV_TS))
+    [ "$INTERVAL" -lt 1 ] && INTERVAL=1
+    [ "$INTERVAL" -gt 60 ] && INTERVAL=1
+
+    # 2b. First-call guard: no baseline yet → emit zeros, seed baseline
+    if [ ! -s "$PREV" ]; then
+        json_init
+        json_add_int "interval" 1
+        json_add_array "devices"
+        # Write macs to a file first; read with redirection (NOT pipe — subshell loses json state)
+        awk '{ if (NF>=3) seen[$1]=1 } END { for (m in seen) print m }' "$CUR" > "$RATES"
+        while read -r m; do
+            [ -z "$m" ] && continue
+            json_add_object
+            json_add_string "mac" "$m"
+            json_add_int "up_bps" 0
+            json_add_int "down_bps" 0
+            json_add_int "total_bps" 0
+            json_close_object
+        done < "$RATES"
+        rm -f "$RATES"
+        json_close_array
+        json_dump
+        cp "$CUR" "$PREV" 2>/dev/null
+        echo "$NOW" > "$TS"
+        rm -f "$CUR"
+        return
+    fi
+
+    # 3. Rates: "mac up_bps down_bps"
+    : > "$RATES"
+    awk -v prev="$PREV" -v cur="$CUR" -v dt="$INTERVAL" '
+        BEGIN {
+            while ((getline line < prev) > 0) {
+                n = split(line, a, " ")
+                if (n >= 3) p[a[1] ":" a[2]] = a[3] + 0
+            }
+            close(prev)
+            while ((getline line < cur) > 0) {
+                n = split(line, a, " ")
+                if (n < 3) continue
+                key = a[1] ":" a[2]
+                d = a[3] + 0 - (p[key] + 0)
+                if (d < 0) d = 0
+                if (a[2] == "rx") rx[a[1]] += d
+                else if (a[2] == "tx") tx[a[1]] += d
+                macs[a[1]] = 1
+            }
+            close(cur)
+            for (m in macs) {
+                print m, int(rx[m] / dt), int(tx[m] / dt)
+            }
+        }
+    ' > "$RATES"
+
+    # 4. Emit JSON entirely via json-c
+    json_init
+    json_add_int "interval" "$INTERVAL"
+    json_add_array "devices"
+    while read -r mac up dn; do
+        [ -z "$mac" ] && continue
+        json_add_object
+        json_add_string "mac" "$mac"
+        json_add_int "up_bps" "$up"
+        json_add_int "down_bps" "$dn"
+        json_add_int "total_bps" "$((up + dn))"
+        json_close_object
+    done < "$RATES"
+    json_close_array
+    json_dump
+
+    # 5. Rotate samples
+    cp "$CUR" "$PREV" 2>/dev/null
+    echo "$NOW" > "$TS"
+    rm -f "$CUR" "$RATES"
+}
+
 case "$1" in
     list)
         json_init
@@ -990,6 +1102,7 @@ case "$1" in
         json_add_object "migrate_scan";  json_close_object
         json_add_object "migrate_import"; json_close_object
         json_add_object "bandwidth_stats"; json_close_object
+        json_add_object "traffic_stats"; json_close_object
         json_add_object "setup_apply"; json_close_object
         json_add_object "setup_scan"; json_close_object
         json_add_object "revoke_ticket"; json_close_object
@@ -1025,6 +1138,7 @@ case "$1" in
             migrate_scan)   do_migrate_scan ;;
             migrate_import) do_migrate_import ;;
             bandwidth_stats) do_bandwidth_stats ;;
+            traffic_stats) do_traffic_stats ;;
             setup_apply) do_setup_apply ;;
             setup_scan) do_setup_scan ;;
             revoke_ticket) do_revoke_ticket ;;
