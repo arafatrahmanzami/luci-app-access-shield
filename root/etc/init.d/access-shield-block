@@ -1,0 +1,101 @@
+#!/bin/sh /etc/rc.common
+START=96
+STOP=8
+USE_PROCD=1
+. /lib/functions.sh
+
+CFG="access_shield"
+TAG="access-shield-block"
+NFT_TABLE="access_shield_block"
+
+log() { logger -t "$TAG" "$*"; }
+
+purge_block() {
+    nft delete table inet "$NFT_TABLE" 2>/dev/null
+    log "purged block table"
+}
+
+# Lookup the binding's iface for a given MAC
+find_iface_for_mac() {
+    local mac="$1" s bmac biface
+    mac=$(echo "$mac" | tr 'A-Z' 'a-z')
+    for s in $(uci show "$CFG" 2>/dev/null | grep '=binding' | cut -d. -f2 | cut -d= -f1); do
+        bmac=$(uci -q get "$CFG.$s.mac" | tr 'A-Z' 'a-z')
+        if [ "$bmac" = "$mac" ]; then
+            biface=$(uci -q get "$CFG.$s.iface")
+            echo "$biface"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+apply_rules() {
+    local count_tickets=0 count_blocks=0
+    local now
+    now=$(date +%s)
+
+    nft add table inet "$NFT_TABLE" 2>/dev/null
+    nft add chain inet "$NFT_TABLE" forward \
+        "{ type filter hook forward priority 5 ; policy accept ; }" 2>/dev/null
+    nft flush chain inet "$NFT_TABLE" forward 2>/dev/null
+
+    config_load "$CFG"
+
+    # ── 1. Ticket accepts (run first, so they bypass blocks) ──
+    process_ticket() {
+        local section="$1" mac expires iface mac_lc mac_clean
+        config_get mac "$section" mac
+        config_get expires "$section" expires_at
+        [ -n "$mac" ] || return 0
+        [ -n "$expires" ] || return 0
+        [ "$now" -ge "$expires" ] && return 0
+
+        iface=$(find_iface_for_mac "$mac")
+        [ -n "$iface" ] || { log "ticket: no binding for $mac, skipping"; return 0; }
+
+        mac_lc=$(echo "$mac" | tr 'A-Z' 'a-z')
+        mac_clean=$(echo "$mac_lc" | tr -d ':')
+        nft add rule inet "$NFT_TABLE" forward \
+            iifname "$iface" ether saddr "$mac_lc" counter accept \
+            comment "access_shield_ticket_${mac_clean}"
+        log "ticket active: $mac_lc on $iface"
+        count_tickets=$((count_tickets + 1))
+    }
+    config_foreach process_ticket ticket
+
+    # ── 2. Block drops (after tickets) ────────────────────────
+    process_block() {
+        local section="$1" enabled block mac name iface mac_lc
+        config_get_bool enabled "$section" enabled 1
+        config_get_bool block   "$section" block_internet 0
+        config_get mac  "$section" mac
+        config_get name "$section" name
+        config_get iface "$section" iface
+
+        [ "$enabled" = "1" ] || return 0
+        [ "$block" = "1" ] || return 0
+        [ -n "$mac" ] && [ -n "$iface" ] || return 0
+
+        mac_lc=$(echo "$mac" | tr 'A-Z' 'a-z')
+        nft add rule inet "$NFT_TABLE" forward \
+            iifname "$iface" ether saddr "$mac_lc" counter drop \
+            comment "access_shield_block_${name}"
+        log "block: $mac_lc on $iface ($name)"
+        count_blocks=$((count_blocks + 1))
+    }
+    config_foreach process_block binding
+
+    log "applied $count_tickets tickets, $count_blocks blocks"
+}
+
+start_service() {
+    [ "$(uci -q get $CFG.settings.enabled)" = "1" ] || { log "master OFF"; return 0; }
+    log "starting"
+    purge_block
+    apply_rules
+}
+
+stop_service() { log "stopping"; purge_block; }
+reload_service() { stop_service; start_service; }
+service_triggers() { procd_add_reload_trigger "$CFG"; }

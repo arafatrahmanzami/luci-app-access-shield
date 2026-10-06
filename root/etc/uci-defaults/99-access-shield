@@ -1,0 +1,29 @@
+#!/bin/sh
+# Access Shield — first-install seeder
+# Runs ONCE. Nothing enforced. User must enable via UI.
+
+[ -f /etc/config/access_shield ] && exit 0
+
+cat > /etc/config/access_shield << 'EOUCI'
+config global 'settings'
+    option enabled           '0'
+    option arp               '1'
+    option dhcp              '1'
+    option admin             '1'
+    option rogue             '1'
+    option discovery         '1'
+    option firewall          '0'
+    option wireless          '0'
+    option bandwidth         '0'
+    option compat_mode       'warn'
+    option default_iface     'br-lan2'
+    option exclude_ifaces    'bat0 tailscale0 pppoe-wan eth1macvlan1 lan1macvlan0'
+    option scan_interval     '10'
+    option bandwidth_interval '2'
+    option saved_flow_sw     ''
+    option saved_flow_hw     ''
+    option flow_restore_ask  '1'
+EOUCI
+
+uci -q commit access_shield
+exit 0

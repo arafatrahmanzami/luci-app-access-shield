@@ -1,0 +1,1053 @@
+#!/bin/sh
+. /usr/share/libubox/jshn.sh
+
+CFG="access_shield"
+NFT_TABLE="access_shield_fw"
+
+cfg() { uci -q get "$CFG".settings."$1"; }
+
+list_bridges() {
+    for d in /sys/class/net/*/bridge; do
+        [ -d "$d" ] || continue
+        basename "$(dirname "$d")"
+    done
+}
+
+do_list_bridges() {
+    json_init
+    json_add_array "bridges"
+    for iface in $(list_bridges); do
+        subnet=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2; exit}')
+        state=$(cat /sys/class/net/"$iface"/operstate 2>/dev/null)
+        rules=$(nft list chain inet "$NFT_TABLE" "${iface}_shield" 2>/dev/null | wc -l)
+        json_add_object
+        json_add_string "name"   "$iface"
+        json_add_string "subnet" "$subnet"
+        json_add_string "state"  "$state"
+        json_add_int    "rules"  "$rules"
+        json_close_object
+    done
+    json_close_array
+    json_dump
+}
+
+do_status() {
+    json_init
+    json_add_string "enabled"     "$(cfg enabled)"
+    json_add_string "compat_mode" "$(cfg compat_mode)"
+    json_add_int    "bindings"    "$(uci show $CFG 2>/dev/null | grep -c '=binding')"
+    json_add_int    "dhcp_mirror" "$(uci show dhcp 2>/dev/null | grep -c "allocated_by='$CFG'")"
+    json_add_int    "admin_log"   "$(wc -l < /tmp/access_shield_admin_safeguard.log 2>/dev/null || echo 0)"
+    json_dump
+}
+
+do_sync() {
+    /etc/init.d/access-shield reload >/dev/null 2>&1 &
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_migrate_scan() {
+    out=$(/usr/bin/access-shield-migrate scan)
+    json_init
+    json_add_string "result" "$out"
+    json_dump
+}
+
+do_migrate_import() {
+    out=$(/usr/bin/access-shield-migrate import)
+    json_init
+    json_add_boolean "ok" 1
+    json_add_string "output" "$out"
+    json_dump
+}
+
+
+do_bandwidth_stats() {
+    json_init
+    json_add_array "top"
+
+    if [ -f /proc/net/nf_conntrack ]; then
+        awk '
+            {
+                src = ""; bytes = 0
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^src=/) src = substr($i, 5)
+                    if ($i ~ /^bytes=/) bytes = substr($i, 7) + 0
+                }
+                if (src != "" && bytes > 0) {
+                    sum[src] += bytes
+                    cnt[src] += 1
+                }
+            }
+            END { for (ip in sum) printf "%s %d %d\n", ip, cnt[ip], sum[ip] }
+        ' /proc/net/nf_conntrack 2>/dev/null | sort -k3 -rn | head -30 > /tmp/access_shield_bw.txt
+
+        if [ -s /tmp/access_shield_bw.txt ]; then
+            while read -r ip flows bytes; do
+                [ -z "$ip" ] && continue
+                json_add_object
+                json_add_string "ip"    "$ip"
+                json_add_int    "flows" "$flows"
+                json_add_int    "bytes" "$bytes"
+                json_close_object
+            done < /tmp/access_shield_bw.txt
+        fi
+    fi
+
+    json_close_array
+    json_add_string "flow_offload_sw" "$(uci -q get firewall.@defaults[0].flow_offloading)"
+    json_add_string "flow_offload_hw" "$(uci -q get firewall.@defaults[0].flow_offloading_hw)"
+    json_dump
+}
+
+do_list_devices() {
+    # Calls the standalone discover script and passes through JSON
+    out=$(/usr/bin/access-shield-discover 2>/dev/null)
+    if [ -z "$out" ]; then
+        json_init
+        json_add_array "devices"
+        json_close_array
+        json_dump
+        return
+    fi
+    # The discover script outputs raw JSON — dump it directly
+    printf '%s\n' "$out"
+}
+
+do_traffic_per_device() {
+    out=$(/usr/bin/access-shield-traffic 2>/dev/null)
+    if [ -z "$out" ]; then
+        json_init
+        json_add_int "interval" 1
+        json_add_array "devices"
+        json_close_array
+        json_dump
+        return
+    fi
+    printf '%s\n' "$out"
+}
+
+do_bind_device() {
+    local mac ip iface name
+    json_get_var mac   "mac"
+    json_get_var ip    "ip"
+    json_get_var iface "iface"
+    json_get_var name  "name"
+
+    mac=$(echo "$mac" | tr 'A-Z' 'a-z')
+    [ -z "$mac" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "mac required"; json_dump; return; }
+    [ -z "$ip" ] && ip="0.0.0.0"
+    [ -z "$iface" ] && iface="br-lan2"
+    [ -z "$name" ] && name="device-$(echo "$mac" | tr -d ':')"
+
+    section="dev_$(echo "$mac" | tr -d ':')"
+
+    uci -q batch <<EOS
+set access_shield.${section}=binding
+set access_shield.${section}.enabled='1'
+set access_shield.${section}.name='${name}'
+set access_shield.${section}.iface='${iface}'
+set access_shield.${section}.ip='${ip}'
+set access_shield.${section}.mac='${mac}'
+set access_shield.${section}.leasetime='infinite'
+set access_shield.${section}.block_internet='0'
+EOS
+    uci -q commit access_shield
+    /etc/init.d/access-shield reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_add_string "section" "$section"
+    json_dump
+}
+
+do_unbind_device() {
+    local mac section
+    json_get_var mac "mac"
+    mac=$(echo "$mac" | tr 'A-Z' 'a-z')
+
+    section=""
+    for s in $(uci show access_shield 2>/dev/null | grep '=binding' | cut -d. -f2 | cut -d= -f1); do
+        bmac=$(uci -q get access_shield.$s.mac | tr 'A-Z' 'a-z')
+        [ "$bmac" = "$mac" ] && { section="$s"; break; }
+    done
+
+    if [ -z "$section" ]; then
+        json_init; json_add_boolean "ok" 0; json_add_string "error" "not found"; json_dump; return
+    fi
+
+    uci -q delete access_shield."$section"
+    uci -q commit access_shield
+    /etc/init.d/access-shield reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_rename_device() {
+    local mac name section
+    json_get_var mac  "mac"
+    json_get_var name "name"
+    mac=$(echo "$mac" | tr 'A-Z' 'a-z')
+
+    section=""
+    for s in $(uci show access_shield 2>/dev/null | grep '=binding' | cut -d. -f2 | cut -d= -f1); do
+        bmac=$(uci -q get access_shield.$s.mac | tr 'A-Z' 'a-z')
+        [ "$bmac" = "$mac" ] && { section="$s"; break; }
+    done
+
+    if [ -z "$section" ]; then
+        json_init; json_add_boolean "ok" 0; json_add_string "error" "not found"; json_dump; return
+    fi
+
+    uci -q set access_shield."$section".name="$name"
+    uci -q commit access_shield
+    /etc/init.d/access-shield reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_set_block() {
+    local mac block section
+    json_get_var mac   "mac"
+    json_get_var block "block"
+    mac=$(echo "$mac" | tr 'A-Z' 'a-z')
+
+    section=""
+    for s in $(uci show access_shield 2>/dev/null | grep '=binding' | cut -d. -f2 | cut -d= -f1); do
+        bmac=$(uci -q get access_shield.$s.mac | tr 'A-Z' 'a-z')
+        [ "$bmac" = "$mac" ] && { section="$s"; break; }
+    done
+
+    if [ -z "$section" ]; then
+        json_init; json_add_boolean "ok" 0; json_add_string "error" "not bound"; json_dump; return
+    fi
+
+    uci -q set access_shield."$section".block_internet="$block"
+    uci -q commit access_shield
+    /etc/init.d/access-shield-block reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_list_bindings() {
+    json_init
+    json_add_array "bindings"
+    for s in $(uci show access_shield 2>/dev/null | grep '=binding' | cut -d. -f2 | cut -d= -f1); do
+        bmac=$(uci -q get access_shield.$s.mac)
+        bip=$(uci -q get access_shield.$s.ip)
+        bname=$(uci -q get access_shield.$s.name)
+        biface=$(uci -q get access_shield.$s.iface)
+        ben=$(uci -q get access_shield.$s.enabled)
+        bblock=$(uci -q get access_shield.$s.block_internet)
+        json_add_object
+        json_add_string "section" "$s"
+        json_add_string "mac"     "$bmac"
+        json_add_string "ip"      "$bip"
+        json_add_string "name"    "$bname"
+        json_add_string "iface"   "$biface"
+        json_add_string "enabled" "$ben"
+        json_add_string "block"   "${bblock:-0}"
+        json_close_object
+    done
+    json_close_array
+    json_dump
+}
+
+do_wifi_interfaces() {
+    json_init
+    json_add_array "interfaces"
+    for s in $(uci -q show wireless 2>/dev/null | grep -E "=['\'"]?wifi-iface['\'"]?" | cut -d. -f2 | cut -d= -f1 | tr -d "'\""); do
+        [ -z "$s" ] && continue
+        d=$(uci -q get wireless.$s.device 2>/dev/null)
+        m=$(uci -q get wireless.$s.mode 2>/dev/null || echo "ap")
+        ssid=$(uci -q get wireless.$s.ssid 2>/dev/null)
+        disabled=$(uci -q get wireless.$s.disabled 2>/dev/null || echo "0")
+        macfilter=$(uci -q get wireless.$s.macfilter 2>/dev/null || echo "disable")
+        mlist=$(uci -q get wireless.$s.maclist 2>/dev/null)
+
+        json_add_object
+        json_add_string "section" "$s"
+        json_add_string "device"  "$d"
+        json_add_string "mode"    "$m"
+        json_add_string "ssid"    "$ssid"
+        json_add_string "disabled" "$disabled"
+        json_add_string "macfilter" "$macfilter"
+
+        json_add_array "maclist"
+        for item in $mlist; do
+            json_add_string "" "$item"
+        done
+        json_close_array
+        json_close_object
+    done
+    json_close_array
+    json_dump
+}
+
+do_set_mac_filter() {
+    local section mac action
+    json_get_var section "section"
+    json_get_var mac "mac"
+    json_get_var action "action"
+    mac=$(echo "$mac" | tr 'a-z' 'A-Z')
+
+    if [ -z "$section" ] || [ -z "$mac" ]; then
+        json_init; json_add_boolean "ok" 0; json_add_string "error" "missing"; json_dump; return
+    fi
+
+    case "$action" in
+        add)
+            uci -q set wireless."$section".macfilter="allow"
+            uci -q del_list wireless."$section".maclist="$mac" 2>/dev/null
+            uci -q add_list wireless."$section".maclist="$mac"
+            ;;
+        remove)
+            uci -q del_list wireless."$section".maclist="$mac" 2>/dev/null
+            ;;
+    esac
+    uci -q commit wireless
+    ( wifi reload >/dev/null 2>&1 & ) &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_get_speed_limits() {
+    json_init
+    json_add_array "limits"
+    for s in $(uci -q show access_shield 2>/dev/null | grep "=limit" | cut -d. -f2 | cut -d= -f1); do
+        lmac=$(uci -q get access_shield.$s.mac)
+        lip=$(uci -q get access_shield.$s.ip)
+        ldlv=$(uci -q get access_shield.$s.dl_val)
+        ldlu=$(uci -q get access_shield.$s.dl_unit)
+        lulv=$(uci -q get access_shield.$s.ul_val)
+        lulu=$(uci -q get access_shield.$s.ul_unit)
+        json_add_object
+        json_add_string "section" "$s"
+        json_add_string "mac"     "$lmac"
+        json_add_string "ip"      "$lip"
+        json_add_string "dl_val"  "$ldlv"
+        json_add_string "dl_unit" "$ldlu"
+        json_add_string "ul_val"  "$lulv"
+        json_add_string "ul_unit" "$lulu"
+        json_close_object
+    done
+    json_close_array
+    json_dump
+}
+
+do_set_speed_limit() {
+    local mac ip dl_val dl_unit ul_val ul_unit
+    json_get_var mac     "mac"
+    json_get_var ip      "ip"
+    json_get_var dl_val  "dl_val"
+    json_get_var dl_unit "dl_unit"
+    json_get_var ul_val  "ul_val"
+    json_get_var ul_unit "ul_unit"
+    mac=$(echo "$mac" | tr 'a-z' 'A-Z')
+
+    [ -z "$dl_val" ] && dl_val="0"
+    [ -z "$dl_unit" ] && dl_unit="Mbps"
+    [ -z "$ul_val" ] && ul_val="0"
+    [ -z "$ul_unit" ] && ul_unit="Mbps"
+
+    if [ -z "$mac" ]; then
+        json_init; json_add_boolean "ok" 0; json_add_string "error" "mac required"; json_dump; return
+    fi
+
+    clean=$(echo "$mac" | tr -d ':' | tr 'A-Z' 'a-z')
+    sec="limit_${clean}"
+
+    has_dl=$(awk -v v="$dl_val" 'BEGIN { print (v+0 > 0) ? 1 : 0 }')
+    has_ul=$(awk -v v="$ul_val" 'BEGIN { print (v+0 > 0) ? 1 : 0 }')
+
+    uci -q delete access_shield."$sec" 2>/dev/null
+
+    if [ "$has_dl" = "1" ] || [ "$has_ul" = "1" ]; then
+        uci -q batch <<EOS
+set access_shield.${sec}=limit
+set access_shield.${sec}.mac='${mac}'
+set access_shield.${sec}.ip='${ip}'
+set access_shield.${sec}.dl_val='${dl_val}'
+set access_shield.${sec}.dl_unit='${dl_unit}'
+set access_shield.${sec}.ul_val='${ul_val}'
+set access_shield.${sec}.ul_unit='${ul_unit}'
+EOS
+    fi
+    uci -q commit access_shield
+
+    /etc/init.d/access-shield-shape reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_delete_speed_limit() {
+    local mac
+    json_get_var mac "mac"
+    mac=$(echo "$mac" | tr 'A-Z' 'a-z')
+
+    clean=$(echo "$mac" | tr -d ':' | tr 'A-Z' 'a-z')
+    sec="limit_${clean}"
+
+    uci -q delete access_shield."$sec" 2>/dev/null
+    uci -q commit access_shield
+
+    /etc/init.d/access-shield-shape reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_list_aliases() {
+    json_init
+    json_add_array "aliases"
+    for s in $(uci show access_shield 2>/dev/null | grep '=alias' | cut -d. -f2 | cut -d= -f1); do
+        aip=$(uci -q get access_shield.$s.ip)
+        aname=$(uci -q get access_shield.$s.name)
+        amac=$(uci -q get access_shield.$s.mac)
+        json_add_object
+        json_add_string "section" "$s"
+        json_add_string "ip"      "$aip"
+        json_add_string "name"    "$aname"
+        json_add_string "mac"     "$amac"
+        json_close_object
+    done
+    json_close_array
+    json_dump
+}
+
+do_set_alias() {
+    local ip name mac
+    json_get_var ip   "ip"
+    json_get_var name "name"
+    json_get_var mac  "mac"
+
+    [ -z "$ip" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "ip required"; json_dump; return; }
+    [ -z "$name" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "name required"; json_dump; return; }
+
+    # Sanitize: keep alnum, space, dot, dash, underscore, parens
+    name=$(echo "$name" | tr -d '\n\r\t' | tr -cd 'a-zA-Z0-9 _.()-' | cut -c1-32)
+
+    sec="alias_$(echo "$ip" | tr '.' '_')"
+
+    uci -q batch <<EOS
+set access_shield.${sec}=alias
+set access_shield.${sec}.ip='${ip}'
+set access_shield.${sec}.name='${name}'
+set access_shield.${sec}.mac='${mac}'
+EOS
+    uci -q commit access_shield
+
+    json_init
+    json_add_boolean "ok" 1
+    json_add_string "section" "$sec"
+    json_dump
+}
+
+do_delete_alias() {
+    local ip section
+    json_get_var ip "ip"
+    section="alias_$(echo "$ip" | tr '.' '_')"
+    uci -q delete access_shield."$section" 2>/dev/null
+    uci -q commit access_shield
+
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_list_subnets() {
+    json_init
+    json_add_array "subnets"
+    # Auto-detect all bridges with an IPv4 address
+    for bridge in $(ls /sys/class/net/ | grep '^br-'); do
+        ifaddr=$(ip -4 addr show "$bridge" 2>/dev/null | awk '/inet /{print $2; exit}')
+        [ -n "$ifaddr" ] || continue
+        # Derive CIDR from IP/mask
+        ip_only=$(echo "$ifaddr" | cut -d/ -f1)
+        prefix=$(echo "$ifaddr" | cut -d/ -f2)
+        # Calculate network address
+        IFS=. read -r a b c d <<EOF
+$ip_only
+EOF
+        case "$prefix" in
+            24) net="$a.$b.$c.0/24" ;;
+            16) net="$a.$b.0.0/16" ;;
+            8)  net="$a.0.0.0/8" ;;
+            *)  net="$ip_only/$prefix" ;;
+        esac
+
+        # Look up existing config section
+        sec=""
+        for s in $(uci show "$CFG" 2>/dev/null | grep '=subnet' | cut -d. -f2 | cut -d= -f1); do
+            cidr=$(uci -q get "$CFG.$s.cidr")
+            [ "$cidr" = "$net" ] && { sec="$s"; break; }
+        done
+
+        dlv=""; dlu="Mbps"; ulv=""; ulu="Mbps"; label=""
+        if [ -n "$sec" ]; then
+            dlv=$(uci -q get "$CFG.$sec.dl_val")
+            dlu=$(uci -q get "$CFG.$sec.dl_unit")
+            ulv=$(uci -q get "$CFG.$sec.ul_val")
+            ulu=$(uci -q get "$CFG.$sec.ul_unit")
+            label=$(uci -q get "$CFG.$sec.label")
+        fi
+
+        json_add_object
+        json_add_string "bridge" "$bridge"
+        json_add_string "cidr"   "$net"
+        json_add_string "section" "$sec"
+        json_add_string "label"  "$label"
+        json_add_string "dl_val" "$dlv"
+        json_add_string "dl_unit" "$dlu"
+        json_add_string "ul_val" "$ulv"
+        json_add_string "ul_unit" "$ulu"
+        json_close_object
+    done
+    json_close_array
+    json_dump
+}
+
+do_set_subnet_limit() {
+    local cidr device label dl_val dl_unit ul_val ul_unit
+    json_get_var cidr "cidr"
+    json_get_var device "device"
+    json_get_var label "label"
+    json_get_var dl_val "dl_val"
+    json_get_var dl_unit "dl_unit"
+    json_get_var ul_val "ul_val"
+    json_get_var ul_unit "ul_unit"
+
+    [ -z "$cidr" ] && { json_init; json_add_boolean "ok" 0; json_dump; return; }
+
+    [ -z "$dl_unit" ] && dl_unit="Mbps"
+    [ -z "$ul_unit" ] && ul_unit="Mbps"
+
+    # Find or create section
+    sec=""
+    for s in $(uci show "$CFG" 2>/dev/null | grep '=subnet' | cut -d. -f2 | cut -d= -f1); do
+        c=$(uci -q get "$CFG.$s.cidr")
+        [ "$c" = "$cidr" ] && { sec="$s"; break; }
+    done
+    [ -z "$sec" ] && sec="subnet_$(echo "$cidr" | tr '/.' '__')"
+
+    # If both empty → delete
+    has_dl=$(awk -v v="$dl_val" 'BEGIN{print (v+0>0)?1:0}')
+    has_ul=$(awk -v v="$ul_val" 'BEGIN{print (v+0>0)?1:0}')
+
+    if [ "$has_dl" = "0" ] && [ "$has_ul" = "0" ]; then
+        uci -q delete "$CFG.$sec" 2>/dev/null
+        uci -q commit "$CFG"
+        /etc/init.d/access-shield-subnet reload >/dev/null 2>&1 &
+        json_init; json_add_boolean "ok" 1; json_add_string "removed" "1"; json_dump
+        return
+    fi
+
+    uci -q batch <<EOS
+set ${CFG}.${sec}=subnet
+set ${CFG}.${sec}.enabled='1'
+set ${CFG}.${sec}.cidr='${cidr}'
+set ${CFG}.${sec}.device='${device}'
+set ${CFG}.${sec}.label='${label}'
+set ${CFG}.${sec}.dl_val='${dl_val}'
+set ${CFG}.${sec}.dl_unit='${dl_unit}'
+set ${CFG}.${sec}.ul_val='${ul_val}'
+set ${CFG}.${sec}.ul_unit='${ul_unit}'
+EOS
+    uci -q commit "$CFG"
+
+    /etc/init.d/access-shield-subnet reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_add_string "section" "$sec"
+    json_dump
+}
+
+do_list_tickets() {
+    json_init
+    json_add_array "tickets"
+    now=$(date +%s)
+    for s in $(uci show access_shield 2>/dev/null | grep '=ticket' | cut -d. -f2 | cut -d= -f1); do
+        tmac=$(uci -q get access_shield.$s.mac)
+        texpires=$(uci -q get access_shield.$s.expires_at)
+        tlabel=$(uci -q get access_shield.$s.label)
+        tsecs=$((texpires - now))
+        [ "$tsecs" -lt 0 ] && tsecs=0
+        json_add_object
+        json_add_string "section" "$s"
+        json_add_string "mac" "$tmac"
+        json_add_string "expires_at" "$texpires"
+        json_add_int "seconds_left" "$tsecs"
+        json_add_string "label" "$tlabel"
+        json_close_object
+    done
+    json_close_array
+    json_dump
+}
+
+do_issue_ticket() {
+    local mac duration label
+    json_get_var mac "mac"
+    json_get_var duration "duration"
+    json_get_var label "label"
+    mac=$(echo "$mac" | tr 'a-z' 'A-Z')
+
+    [ -z "$mac" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "mac required"; json_dump; return; }
+    [ -z "$duration" ] && duration=60
+
+    now=$(date +%s)
+    expires=$((now + duration * 60))
+    clean=$(echo "$mac" | tr -d ':' | tr 'A-Z' 'a-z')
+    sec="tk_${clean}"
+
+    uci -q batch <<EOS
+set access_shield.${sec}=ticket
+set access_shield.${sec}.mac='${mac}'
+set access_shield.${sec}.expires_at='${expires}'
+set access_shield.${sec}.duration='${duration}'
+set access_shield.${sec}.label='${label}'
+EOS
+    uci -q commit access_shield
+    /etc/init.d/access-shield-block reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_add_string "section" "$sec"
+    json_add_int "expires_at" "$expires"
+    json_add_int "seconds_left" "$((duration * 60))"
+    json_dump
+}
+
+do_revoke_ticket() {
+    local mac clean sec
+    json_get_var mac "mac"
+    mac=$(echo "$mac" | tr 'a-z' 'A-Z')
+    clean=$(echo "$mac" | tr -d ':' | tr 'A-Z' 'a-z')
+    sec="tk_${clean}"
+    uci -q delete access_shield."$sec" 2>/dev/null
+    uci -q commit access_shield
+    /etc/init.d/access-shield-block reload >/dev/null 2>&1 &
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
+do_setup_scan() {
+    json_init
+
+    # ── 1. Available bridges ──────────────────────────────────
+    json_add_array "bridges"
+    for iface in $(ls /sys/class/net/ | grep "^br-"); do
+        addr=$(ip -4 addr show "$iface" 2>/dev/null | awk "/inet /{print \$2; exit}")
+        [ -n "$addr" ] || continue
+        subnet=$(echo "$addr" | awk -F/ "{print \$1}" | awk -F. "{print \$1\".\"\$2\".\"\$3\".0/24\"}")
+        has_dhcp=$(grep -c "interface.*$iface\|interface.*$(echo $iface | sed s/br-//)" /etc/config/dhcp 2>/dev/null || echo 0)
+        json_add_object
+        json_add_string "name" "$iface"
+        json_add_string "ip" "$addr"
+        json_add_string "subnet" "$subnet"
+        json_add_int "dhcp_sections" "$has_dhcp"
+        json_close_object
+    done
+    json_close_array
+
+    # ── 2. Admin session IP ───────────────────────────────────
+    # Detect admin IP by parsing /proc/net/tcp directly (works from rpcd)
+    admin_ip=""
+    if [ -f /proc/net/tcp ]; then
+        admin_ip=$(awk '
+            function h2d(h,    i, c, v, n) {
+                n = 0
+                h = tolower(h)
+                for (i = 1; i <= length(h); i++) {
+                    c = substr(h, i, 1)
+                    v = index("0123456789abcdef", c) - 1
+                    if (v < 0) return -1
+                    n = n * 16 + v
+                }
+                return n
+            }
+            NR > 1 && $4 == "01" {
+                split($2, loc, ":")
+                split($3, rem, ":")
+                lp = loc[2]
+                # Only care about connections TO 22 (0016), 80 (0050), 443 (01BB)
+                if (lp != "0016" && lp != "0050" && lp != "01BB") next
+                # Skip unconnected and loopback
+                if (rem[1] == "00000000" || rem[1] == "0100007F") next
+                if (length(rem[1]) != 8) next
+                a = h2d(substr(rem[1], 7, 2))
+                b = h2d(substr(rem[1], 5, 2))
+                c = h2d(substr(rem[1], 3, 2))
+                d = h2d(substr(rem[1], 1, 2))
+                # Only private LAN ranges
+                if (a == 192 && b == 168) print a"."b"."c"."d
+                else if (a == 10) print a"."b"."c"."d
+                else if (a == 172 && b >= 16 && b <= 31) print a"."b"."c"."d
+            }
+        ' /proc/net/tcp | head -1)
+    fi
+
+    # Secondary fallback: SSH_CONNECTION env (only if rpcd inherited it)
+    if [ -z "$admin_ip" ] && [ -n "$SSH_CONNECTION" ]; then
+        admin_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+    fi
+    json_add_string "admin_ip" "$admin_ip"
+
+    if [ -n "$admin_ip" ]; then
+        # Parse /proc/net/arp with grep + awk (no variable interpolation into awk)
+        arp_line=$(grep "^$admin_ip " /proc/net/arp 2>/dev/null | head -1)
+        if [ -n "$arp_line" ]; then
+            admin_mac=$(echo "$arp_line" | awk '{print $4}')
+            admin_dev=$(echo "$arp_line" | awk '{print $6}')
+        else
+            admin_mac=""
+            admin_dev=""
+        fi
+        json_add_string "admin_mac" "$admin_mac"
+        json_add_string "admin_iface" "$admin_dev"
+    else
+        json_add_string "admin_mac" ""
+        json_add_string "admin_iface" ""
+    fi
+
+    # ── 3. Target bridge state ────────────────────────────────
+    target=$(uci -q get access_shield.settings.default_iface)
+    [ -z "$target" ] && target="br-lan2"
+    json_add_string "target_bridge" "$target"
+
+    json_add_object "target_state"
+    if [ -d "/sys/class/net/$target" ]; then
+        json_add_boolean "exists" 1
+        json_add_string "ip" "$(ip -4 addr show $target 2>/dev/null | awk "/inet /{print \$2; exit}")"
+
+        # Find DHCP section for this bridge
+        dhcp_sec=""
+        netname=$(uci show network 2>/dev/null | grep "\.device='$target'" | head -1 | cut -d. -f2 | cut -d= -f1)
+        if [ -n "$netname" ]; then
+            for s in $(uci show dhcp 2>/dev/null | grep "=dhcp" | cut -d. -f2 | cut -d= -f1); do
+                iface=$(uci -q get dhcp.$s.interface)
+                [ "$iface" = "$netname" ] && { dhcp_sec="$s"; break; }
+            done
+        fi
+        json_add_string "dhcp_section" "$dhcp_sec"
+        if [ -n "$dhcp_sec" ]; then
+            json_add_string "dhcp_dynamic" "$(uci -q get dhcp.$dhcp_sec.dynamicdhcp)"
+            json_add_string "dhcp_force" "$(uci -q get dhcp.$dhcp_sec.force)"
+        else
+            json_add_string "dhcp_dynamic" ""
+            json_add_string "dhcp_force" ""
+        fi
+
+        # Find firewall zone for this bridge
+        zone=""
+        for z in $(uci show firewall 2>/dev/null | grep "=zone" | cut -d. -f2 | cut -d= -f1); do
+            networks=$(uci -q get firewall.$z.network)
+            case " $networks " in
+                *" $netname "*) zone="$z"; break ;;
+            esac
+        done
+        json_add_string "firewall_zone" "$zone"
+
+        # Check if zone allows DHCP/DNS/LuCI
+        if [ -n "$zone" ]; then
+            zname=$(uci -q get firewall.$zone.name)
+            json_add_string "firewall_zone_name" "$zname"
+            json_add_string "firewall_input" "$(uci -q get firewall.$zone.input)"
+            json_add_string "firewall_forward" "$(uci -q get firewall.$zone.forward)"
+
+            # Search for allow rules targeting this zone
+            dhcp_rule=0; dns_rule=0; luci_rule=0
+            for r in $(uci show firewall 2>/dev/null | grep "=rule" | cut -d. -f2 | cut -d= -f1); do
+                src=$(uci -q get firewall.$r.src)
+                [ "$src" = "$zname" ] || continue
+                name=$(uci -q get firewall.$r.name)
+                port=$(uci -q get firewall.$r.dest_port)
+                case "$name" in
+                    *DHCP*|*dhcp*) dhcp_rule=1 ;;
+                    *DNS*|*dns*)   dns_rule=1 ;;
+                    *LuCI*|*luci*|*web*) luci_rule=1 ;;
+                esac
+                case "$port" in
+                    *67*|*68*) dhcp_rule=1 ;;
+                    *53*) dns_rule=1 ;;
+                    *80*|*443*) luci_rule=1 ;;
+                esac
+            done
+            json_add_boolean "zone_allows_dhcp" "$dhcp_rule"
+            json_add_boolean "zone_allows_dns"  "$dns_rule"
+            json_add_boolean "zone_allows_luci" "$luci_rule"
+        else
+            json_add_string "firewall_zone_name" ""
+            json_add_string "firewall_input" ""
+            json_add_string "firewall_forward" ""
+            json_add_boolean "zone_allows_dhcp" 0
+            json_add_boolean "zone_allows_dns"  0
+            json_add_boolean "zone_allows_luci" 0
+        fi
+
+        # Interface mode in access_shield config
+        for s in $(uci show access_shield 2>/dev/null | grep "=interface" | cut -d. -f2 | cut -d= -f1); do
+            d=$(uci -q get access_shield.$s.device)
+            [ "$d" = "$target" ] || continue
+            json_add_string "interface_section" "$s"
+            json_add_string "interface_mode" "$(uci -q get access_shield.$s.mode)"
+            json_add_string "interface_enabled" "$(uci -q get access_shield.$s.enabled)"
+            break
+        done
+    else
+        json_add_boolean "exists" 0
+    fi
+    json_close_object
+
+    # ── 4. Admin binding status ───────────────────────────────
+    json_add_object "admin_binding"
+    if [ -n "$admin_mac" ]; then
+        found=""
+        for s in $(uci show access_shield 2>/dev/null | grep "=binding" | cut -d. -f2 | cut -d= -f1); do
+            bmac=$(uci -q get access_shield.$s.mac | tr "A-Z" "a-z")
+            amac=$(echo "$admin_mac" | tr "A-Z" "a-z")
+            if [ "$bmac" = "$amac" ]; then
+                found="$s"
+                break
+            fi
+        done
+        if [ -n "$found" ]; then
+            json_add_boolean "bound" 1
+            json_add_string "section" "$found"
+            json_add_string "name" "$(uci -q get access_shield.$found.name)"
+            json_add_string "iface" "$(uci -q get access_shield.$found.iface)"
+        else
+            json_add_boolean "bound" 0
+        fi
+    else
+        json_add_boolean "bound" 0
+        json_add_string "error" "no admin session detected"
+    fi
+    json_close_object
+
+    # ── 5. Master switch ──────────────────────────────────────
+    json_add_object "master"
+    json_add_string "enabled" "$(uci -q get access_shield.settings.enabled)"
+    json_close_object
+
+    # ── 6. Detected other systems (compatibility warnings) ────
+    json_add_array "warnings"
+    for other in arpbind client_manager trafficctl; do
+        if [ -f /etc/config/$other ] 2>/dev/null; then
+            json_add_string "" "Legacy $other config detected"
+        fi
+    done
+    if [ -d /sys/class/net/br-lan2 ] && nft list table inet arpbind_fw >/dev/null 2>&1; then
+        json_add_string "" "Old arpbind_fw nft table still active"
+    fi
+    json_close_array
+
+    json_dump
+}
+
+do_setup_apply() {
+    local step
+    json_get_var step "step"
+
+    json_init
+    case "$step" in
+        bind_admin)
+            local ip mac iface name
+            json_get_var ip "ip"
+            json_get_var mac "mac"
+            json_get_var iface "iface"
+            json_get_var name "name"
+
+            [ -n "$mac" ] && [ -n "$ip" ] || {
+                json_add_boolean "ok" 0
+                json_add_string "error" "mac and ip required"
+                json_dump
+                return
+            }
+
+            mac=$(echo "$mac" | tr 'A-Z' 'a-z')
+            [ -z "$name" ] && name="Admin-Safeguard"
+            [ -z "$iface" ] && iface=$(uci -q get access_shield.settings.default_iface)
+
+            sec="admin_$(echo "$mac" | tr -d ":")"
+            uci -q batch <<EOS
+set access_shield.${sec}=binding
+set access_shield.${sec}.enabled='1'
+set access_shield.${sec}.name='${name}'
+set access_shield.${sec}.iface='${iface}'
+set access_shield.${sec}.ip='${ip}'
+set access_shield.${sec}.mac='${mac}'
+set access_shield.${sec}.leasetime='infinite'
+set access_shield.${sec}.block_internet='0'
+EOS
+            uci -q commit access_shield
+            json_add_boolean "ok" 1
+            json_add_string "section" "$sec"
+            ;;
+
+        set_interface_mode)
+            local mode
+            json_get_var mode "mode"
+            [ -z "$mode" ] && mode="reply_only"
+
+            target=$(uci -q get access_shield.settings.default_iface)
+            [ -z "$target" ] && target="br-lan2"
+
+            sec=""
+            for s in $(uci show access_shield 2>/dev/null | grep "=interface" | cut -d. -f2 | cut -d= -f1); do
+                d=$(uci -q get access_shield.$s.device)
+                [ "$d" = "$target" ] && { sec="$s"; break; }
+            done
+            [ -z "$sec" ] && sec="$(echo $target | tr '-' '_')"
+
+            uci -q batch <<EOS
+set access_shield.${sec}=interface
+set access_shield.${sec}.device='${target}'
+set access_shield.${sec}.label='${target}'
+set access_shield.${sec}.mode='${mode}'
+set access_shield.${sec}.enabled='1'
+set access_shield.${sec}.dhcp_allow='1'
+set access_shield.${sec}.default_drop='1'
+EOS
+            uci -q commit access_shield
+            /etc/init.d/access-shield reload >/dev/null 2>&1 &
+
+            json_add_boolean "ok" 1
+            json_add_string "section" "$sec"
+            ;;
+
+        ensure_dhcp_static)
+            local section
+            json_get_var section "section"
+            [ -z "$section" ] && { json_add_boolean "ok" 0; json_dump; return; }
+
+            # Snapshot DHCP before change
+            cp /etc/config/dhcp /tmp/access_shield_wizard_dhcp.bak
+
+            uci -q set dhcp.$section.dynamicdhcp=0
+            uci -q set dhcp.$section.force=1
+            uci -q commit dhcp
+
+            /etc/init.d/dnsmasq reload >/dev/null 2>&1 &
+            sleep 1
+
+            if pgrep dnsmasq >/dev/null; then
+                json_add_boolean "ok" 1
+            else
+                # Rollback
+                cp /tmp/access_shield_wizard_dhcp.bak /etc/config/dhcp
+                uci -q commit dhcp
+                /etc/init.d/dnsmasq start >/dev/null 2>&1 &
+                json_add_boolean "ok" 0
+                json_add_string "error" "dnsmasq failed to reload — restored snapshot"
+            fi
+            ;;
+
+        enable_master)
+            uci -q set access_shield.settings.enabled=1
+            uci -q commit access_shield
+            /etc/init.d/access-shield start >/dev/null 2>&1 &
+            sleep 1
+            json_add_boolean "ok" 1
+            ;;
+
+        disable_master)
+            uci -q set access_shield.settings.enabled=0
+            uci -q commit access_shield
+            /etc/init.d/access-shield stop >/dev/null 2>&1 &
+            json_add_boolean "ok" 1
+            ;;
+
+        *)
+            json_add_boolean "ok" 0
+            json_add_string "error" "unknown step: $step"
+            ;;
+    esac
+
+    json_dump
+}
+
+case "$1" in
+    list)
+        json_init
+        json_add_object "list_bridges"; json_close_object
+        json_add_object "status";        json_close_object
+        json_add_object "sync";          json_close_object
+        json_add_object "migrate_scan";  json_close_object
+        json_add_object "migrate_import"; json_close_object
+        json_add_object "bandwidth_stats"; json_close_object
+        json_add_object "setup_apply"; json_close_object
+        json_add_object "setup_scan"; json_close_object
+        json_add_object "revoke_ticket"; json_close_object
+        json_add_object "issue_ticket"; json_close_object
+        json_add_object "list_tickets"; json_close_object
+        json_add_object "set_subnet_limit"; json_close_object
+        json_add_object "list_subnets"; json_close_object
+        json_add_object "delete_alias"; json_close_object
+        json_add_object "set_alias"; json_close_object
+        json_add_object "list_aliases"; json_close_object
+        json_add_object "delete_speed_limit"; json_close_object
+        json_add_object "set_speed_limit"; json_close_object
+        json_add_object "get_speed_limits"; json_close_object
+        json_add_object "set_mac_filter"; json_close_object
+        json_add_object "wifi_interfaces"; json_close_object
+        json_add_object "list_bindings"; json_close_object
+        json_add_object "set_block";     json_close_object
+        json_add_object "rename_device"; json_close_object
+        json_add_object "unbind_device"; json_close_object
+        json_add_object "bind_device";   json_close_object
+        json_add_object "list_devices"; json_close_object
+        json_add_object "traffic_per_device"; json_close_object
+        json_dump
+        ;;
+    call)
+        method="$2"
+        read -r input
+        [ -n "$input" ] && json_load "$input" 2>/dev/null || json_init
+        case "$method" in
+            list_bridges)   do_list_bridges ;;
+            status)         do_status ;;
+            sync)           do_sync ;;
+            migrate_scan)   do_migrate_scan ;;
+            migrate_import) do_migrate_import ;;
+            bandwidth_stats) do_bandwidth_stats ;;
+            setup_apply) do_setup_apply ;;
+            setup_scan) do_setup_scan ;;
+            revoke_ticket) do_revoke_ticket ;;
+            issue_ticket) do_issue_ticket ;;
+            list_tickets) do_list_tickets ;;
+            set_subnet_limit) do_set_subnet_limit ;;
+            list_subnets) do_list_subnets ;;
+            delete_alias) do_delete_alias ;;
+            set_alias) do_set_alias ;;
+            list_aliases) do_list_aliases ;;
+            delete_speed_limit) do_delete_speed_limit ;;
+            set_speed_limit) do_set_speed_limit ;;
+            get_speed_limits) do_get_speed_limits ;;
+            set_mac_filter) do_set_mac_filter ;;
+            wifi_interfaces) do_wifi_interfaces ;;
+            list_bindings) do_list_bindings ;;
+            set_block) do_set_block ;;
+            rename_device) do_rename_device ;;
+            unbind_device) do_unbind_device ;;
+            bind_device) do_bind_device ;;
+            list_devices)  do_list_devices ;;
+            traffic_per_device) do_traffic_per_device ;;
+            *) json_init; json_add_boolean "ok" 0; json_dump ;;
+        esac
+        ;;
+esac

@@ -1,0 +1,102 @@
+#!/bin/sh /etc/rc.common
+START=97
+STOP=8
+USE_PROCD=1
+. /lib/functions.sh
+
+CFG="access_shield"
+TAG="access-shield-shape"
+NFT_TABLE="access_shield_shape"
+
+log() { logger -t "$TAG" "$*"; }
+
+purge_shape() {
+    nft delete table inet "$NFT_TABLE" 2>/dev/null
+    log "purged shape table"
+}
+
+unit_to_bytes_per_sec() {
+    local val="$1" unit="$2"
+    awk -v v="$val" -v u="$unit" 'BEGIN {
+        n = v + 0
+        if (n <= 0) { print 0; exit }
+        if (u == "MBps")       bps = n * 1000000
+        else if (u == "Kbps")  bps = n * 125
+        else if (u == "KBps")  bps = n * 1000
+        else                   bps = n * 125000
+        printf "%d", bps
+    }'
+}
+
+apply_shape() {
+    local count=0
+
+    nft add table inet "$NFT_TABLE" 2>/dev/null
+    nft add chain inet "$NFT_TABLE" forward \
+        "{ type filter hook forward priority 10 ; policy accept ; }" 2>/dev/null
+
+    config_load "$CFG"
+
+    process_limit() {
+        local section="$1" mac ip dlv dlu ulv ulu clean
+        config_get mac "$section" mac
+        config_get ip  "$section" ip
+        config_get dlv "$section" dl_val
+        config_get dlu "$section" dl_unit
+        config_get ulv "$section" ul_val
+        config_get ulu "$section" ul_unit
+
+        [ -n "$mac" ] || return 0
+        clean=$(echo "$mac" | tr -d ':' | tr 'A-Z' 'a-z')
+
+        if [ -n "$ip" ] && [ -n "$dlv" ]; then
+            bps=$(unit_to_bytes_per_sec "$dlv" "$dlu")
+            if [ "$bps" -gt 0 ]; then
+                nft add rule inet "$NFT_TABLE" forward \
+                    ip daddr "$ip" limit rate over "${bps} bytes/second" \
+                    counter drop comment "access_shield_dl_${clean}"
+                log "DL limit: $ip ≤ ${dlv} ${dlu} (${bps} B/s)"
+                count=$((count + 1))
+            fi
+        fi
+
+        if [ -n "$ip" ] && [ -n "$ulv" ]; then
+            bps=$(unit_to_bytes_per_sec "$ulv" "$ulu")
+            if [ "$bps" -gt 0 ]; then
+                nft add rule inet "$NFT_TABLE" forward \
+                    ip saddr "$ip" limit rate over "${bps} bytes/second" \
+                    counter drop comment "access_shield_ul_${clean}"
+                log "UL limit: $ip ≤ ${ulv} ${ulu} (${bps} B/s)"
+                count=$((count + 1))
+            fi
+        fi
+    }
+    config_foreach process_limit limit
+
+    log "applied $count rate limit rules"
+}
+
+start_service() {
+    [ "$(uci -q get $CFG.settings.enabled)" = "1" ] || { log "master OFF"; return 0; }
+    log "starting"
+    purge_shape
+    apply_shape
+}
+
+stop_service() {
+    log "stopping"
+    purge_shape
+}
+
+reload_service() { stop_service; start_service; }
+
+service_triggers() {
+    procd_add_reload_trigger "$CFG"
+}
+
+status() {
+    echo "=== access-shield-shape ==="
+    echo "rules: $(nft list table inet $NFT_TABLE 2>/dev/null | grep -c 'drop')"
+    nft list table inet "$NFT_TABLE" 2>/dev/null | grep "comment" | head -20
+}
+extra_command "status" "Show shaping status"

@@ -1,0 +1,153 @@
+#!/bin/sh
+# access-shield-discover — unified client discovery v4
+# Deduplicates by MAC (freshest ARP entry wins).
+# Lookup priority: alias > binding name > DHCP hostname > "Unknown".
+
+CFG="access_shield"
+
+# ─── Alias lookup (user-set names) ───────────────────────────────
+get_alias_name() {
+    local ip="$1" s aip
+    for s in $(uci show "$CFG" 2>/dev/null | grep '=alias' | cut -d. -f2 | cut -d= -f1); do
+        aip=$(uci -q get "$CFG.$s.ip")
+        if [ "$aip" = "$ip" ]; then
+            uci -q get "$CFG.$s.name"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+# ─── DHCP lease lookup ───────────────────────────────────────────
+get_dhcp_name() {
+    awk -v mac="$1" 'tolower($2) == mac {print $4; exit}' /tmp/dhcp.leases 2>/dev/null
+}
+
+# ─── Binding lookup ──────────────────────────────────────────────
+get_binding_name() {
+    local mac="$1" s bmac
+    for s in $(uci show "$CFG" 2>/dev/null | grep '=binding' | cut -d. -f2 | cut -d= -f1); do
+        bmac=$(uci -q get "$CFG.$s.mac" | tr 'A-Z' 'a-z')
+        if [ "$bmac" = "$mac" ]; then
+            uci -q get "$CFG.$s.name"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+# ─── IPv6 neighbor lookup ────────────────────────────────────────
+get_ipv6() {
+    ip -6 neighbor show 2>/dev/null | \
+        awk -v mac="$1" 'tolower($5) == mac {print $1; exit}'
+}
+
+# ─── WiFi SSID lookup ────────────────────────────────────────────
+get_wifi_ssid() {
+    local mac="$1" wif ssid
+    for wif in $(iw dev 2>/dev/null | awk '/Interface/{print $2}'); do
+        [ "$(iw dev "$wif" info 2>/dev/null | grep -c 'type AP')" -gt 0 ] || continue
+        if iw dev "$wif" station dump 2>/dev/null | grep -qi "^Station $mac"; then
+            ssid=$(iw dev "$wif" info 2>/dev/null | awk '/ssid/{print $2; exit}')
+            echo "$ssid"
+            return
+        fi
+    done
+}
+
+# ─── ARP state priority (higher = fresher) ───────────────────────
+state_priority() {
+    case "$1" in
+        REACHABLE|PERMANENT) echo 5 ;;
+        DELAY)               echo 4 ;;
+        PROBE)               echo 3 ;;
+        STALE)               echo 2 ;;
+        FAILED|INCOMPLETE|"") echo 1 ;;
+        *)                   echo 0 ;;
+    esac
+}
+
+# ─── Build raw candidate list ────────────────────────────────────
+TMPRAW=/tmp/access_shield_raw_$$
+TMPDEDUP=/tmp/access_shield_dedup_$$
+> "$TMPRAW"
+> "$TMPDEDUP"
+
+awk 'NR > 1 && $4 != "00:00:00:00:00:00" && $1 !~ /:/ {
+    print $1 "|" tolower($4) "|" $6 "|" $3
+}' /proc/net/arp 2>/dev/null | while IFS='|' read -r ip mac iface flags; do
+    state=$(ip neigh show "$ip" 2>/dev/null | awk '{print $NF}')
+    [ -z "$state" ] && state="STALE"
+    echo "$ip|$mac|$iface|$state"
+done > "$TMPRAW"
+
+# ─── Deduplicate by MAC ──────────────────────────────────────────
+for mac in $(cut -d'|' -f2 "$TMPRAW" | sort -u); do
+    best_prio=0
+    best_line=""
+    while IFS='|' read -r ip m iface state; do
+        [ "$m" = "$mac" ] || continue
+        prio=$(state_priority "$state")
+        if [ "$prio" -gt "$best_prio" ]; then
+            best_prio=$prio
+            best_line="$ip|$mac|$iface|$state"
+        fi
+    done < "$TMPRAW"
+    [ -n "$best_line" ] && echo "$best_line" >> "$TMPDEDUP"
+done
+
+# ─── Emit JSON ───────────────────────────────────────────────────
+echo "{"
+echo '  "devices": ['
+FIRST=1
+
+while IFS='|' read -r ip mac iface state; do
+    [ -z "$ip" ] && continue
+    case "$iface" in
+        lo|pppoe-wan|tailscale0|eth0|eth1|eth1macvlan1) continue ;;
+    esac
+
+    dhcp_name=$(get_dhcp_name "$mac")
+    binding_name=$(get_binding_name "$mac")
+    alias_name=$(get_alias_name "$ip")
+    ipv6_addr=$(get_ipv6 "$mac")
+    wifi_ssid=$(get_wifi_ssid "$mac")
+
+    if [ -n "$alias_name" ]; then
+        display_name="$alias_name"
+    elif [ -n "$binding_name" ]; then
+        display_name="$binding_name"
+    elif [ -n "$dhcp_name" ]; then
+        display_name="$dhcp_name"
+    else
+        display_name="Unknown"
+    fi
+
+    if [ -n "$binding_name" ]; then
+        bound="true"
+    else
+        bound="false"
+    fi
+
+    if [ -n "$wifi_ssid" ]; then
+        conn_type="wireless"
+    else
+        conn_type="wired"
+    fi
+
+    case "$state" in
+        REACHABLE|PERMANENT|DELAY|PROBE|STALE) online="true" ;;
+        *) online="false" ;;
+    esac
+
+    [ "$FIRST" = "1" ] || echo ","
+    FIRST=0
+    printf '    {"mac":"%s","ipv4":"%s","ipv6":"%s","hostname":"%s","dhcp_name":"%s","iface":"%s","state":"%s","online":%s,"bound":%s,"connection":"%s","ssid":"%s"}' \
+        "$mac" "$ip" "$ipv6_addr" "$display_name" "$dhcp_name" "$iface" "$state" "$online" "$bound" "$conn_type" "$wifi_ssid"
+done < "$TMPDEDUP"
+
+echo ""
+echo '  ]'
+echo "}"
+
+rm -f "$TMPRAW" "$TMPDEDUP"

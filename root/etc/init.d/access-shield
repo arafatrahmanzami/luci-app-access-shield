@@ -1,0 +1,299 @@
+#!/bin/sh /etc/rc.common
+START=95
+STOP=10
+USE_PROCD=1
+. /lib/functions.sh
+
+CFG="access_shield"
+TAG="access-shield"
+NFT_TABLE="access_shield_fw"
+MARKER="access_shield"
+DEFAULT_EXCLUDE="bat0 tailscale0 pppoe-wan eth1macvlan1 lan1macvlan0"
+
+log()  { logger -t "$TAG" "$*"; }
+warn() { logger -t "$TAG" "WARN: $*"; }
+err()  { logger -t "$TAG" "ERROR: $*"; }
+
+cfg()       { uci -q get "$CFG".settings."$1"; }
+cfg_is_on() { local v; v=$(cfg "$1"); [ "$v" = "1" ] || [ -z "$v" ]; }
+
+# BusyBox tr does not support POSIX classes — use sed for whitespace
+norm_mac()   { echo "$1" | tr 'A-Z' 'a-z' | sed 's/[[:space:]]//g' | tr -d ':'; }
+pretty_mac() { echo "$1" | tr 'A-Z' 'a-z' | sed 's/[[:space:]]//g'; }
+dhcp_key()   { echo "${MARKER}_$(norm_mac "$1")"; }
+
+list_bridges() {
+    for d in /sys/class/net/*/bridge; do
+        [ -d "$d" ] || continue
+        basename "$(dirname "$d")"
+    done
+}
+
+iface_exists() { [ -d "/sys/class/net/$1" ]; }
+
+is_excluded() {
+    local iface="$1" list x
+    list="$(cfg exclude_ifaces)"
+    [ -z "$list" ] && list="$DEFAULT_EXCLUDE"
+    for x in $list; do [ "$x" = "$iface" ] && return 0; done
+    return 1
+}
+
+# ── Safe DHCP handling ─────────────────────────────────────────────
+snapshot_dhcp() {
+    cp /etc/config/dhcp /tmp/access_shield.dhcp.snapshot 2>/dev/null && \
+        log "DHCP snapshot saved"
+}
+
+restore_dhcp() {
+    [ -f /tmp/access_shield.dhcp.snapshot ] && {
+        cp /tmp/access_shield.dhcp.snapshot /etc/config/dhcp
+        uci -q commit dhcp
+        log "DHCP config restored from snapshot"
+    }
+}
+
+purge_our_dhcp() {
+    local s count=0
+    for s in $(uci show dhcp 2>/dev/null | grep '=host' | cut -d. -f2 | cut -d= -f1); do
+        [ "$(uci -q get dhcp.$s.allocated_by)" = "$MARKER" ] && {
+            uci -q delete dhcp.$s
+            count=$((count + 1))
+        }
+    done
+    uci -q commit dhcp 2>/dev/null
+    [ "$count" -gt 0 ] && log "purged $count access_shield DHCP entries"
+}
+
+check_dnsmasq() {
+    sleep 1
+    pgrep dnsmasq >/dev/null 2>&1 && return 0
+    return 1
+}
+
+safe_dnsmasq_reload() {
+    log "reloading dnsmasq"
+    /etc/init.d/dnsmasq reload 2>&1 | logger -t "$TAG"
+
+    if check_dnsmasq; then
+        log "dnsmasq OK after reload"
+        return 0
+    fi
+
+    err "dnsmasq not running — restoring DHCP snapshot"
+    restore_dhcp
+    sleep 1
+
+    if check_dnsmasq; then
+        log "dnsmasq recovered after restore"
+        return 0
+    fi
+
+    err "dnsmasq still dead — forcing start"
+    /etc/init.d/dnsmasq start 2>&1 | logger -t "$TAG"
+    sleep 2
+
+    if check_dnsmasq; then
+        log "dnsmasq started"
+        return 0
+    fi
+
+    err "CRITICAL: dnsmasq cannot start"
+    return 1
+}
+
+# ── nftables ───────────────────────────────────────────────────────
+purge_nft() {
+    nft delete table inet "$NFT_TABLE" 2>/dev/null
+    log "purged nft table $NFT_TABLE"
+}
+
+# ── Per-binding processing ─────────────────────────────────────────
+CURRENT_DEVICE=""
+
+process_binding() {
+    local section="$1"
+    local enabled name ip mac iface lease
+    config_get_bool enabled "$section" enabled 1
+    config_get name  "$section" name
+    config_get ip    "$section" ip
+    config_get mac   "$section" mac
+    config_get iface "$section" iface
+    config_get lease "$section" leasetime
+
+    [ "$enabled" = "1" ] || return 0
+    [ "$iface" = "$CURRENT_DEVICE" ] || return 0
+    [ -n "$ip" ] && [ -n "$mac" ] || return 0
+
+    local mac_lc
+    mac_lc=$(pretty_mac "$mac")
+
+    # nftables whitelist rule (matches arpbind's exact pattern)
+    nft add rule inet "$NFT_TABLE" "${CURRENT_DEVICE}_shield" \
+        iifname "$CURRENT_DEVICE" ip saddr "$ip" ether saddr "$mac_lc" accept
+
+    # DHCP static lease mirror (only if feature is on)
+    if cfg_is_on dhcp; then
+        local key
+        key=$(dhcp_key "$mac")
+        uci -q batch <<EOS
+set dhcp.${key}=host
+set dhcp.${key}.name='${name:-device}'
+set dhcp.${key}.mac='${mac_lc}'
+set dhcp.${key}.ip='${ip}'
+set dhcp.${key}.leasetime='${lease:-infinite}'
+set dhcp.${key}.allocated_by='${MARKER}'
+EOS
+    fi
+}
+
+# ── Per-interface application ──────────────────────────────────────
+apply_interface() {
+    local section="$1"
+    local device mode enabled
+    config_get device "$section" device
+    config_get mode "$section" mode
+    config_get_bool enabled "$section" enabled 0
+
+    [ "$enabled" = "1" ] || return 0
+    [ "$mode" = "reply_only" ] || return 0
+    [ -n "$device" ] || return 0
+    iface_exists "$device" || { warn "iface $device missing"; return 0; }
+    is_excluded "$device" && { warn "iface $device is excluded"; return 0; }
+
+    # Create chain (table already created in start_service)
+    nft add chain inet "$NFT_TABLE" "${device}_shield" \
+        "{ type filter hook prerouting priority mangle ; policy accept ; }" 2>/dev/null
+
+    # Allow DHCP
+    nft add rule inet "$NFT_TABLE" "${device}_shield" \
+        iifname "$device" udp dport 67 accept
+
+    # Bindings for this interface
+    CURRENT_DEVICE="$device"
+    config_foreach process_binding binding
+
+    # Default IPv4 drop
+    nft add rule inet "$NFT_TABLE" "${device}_shield" \
+        iifname "$device" meta nfproto ipv4 drop comment "access_shield_whitelist_drop"
+
+    # Sysctls matching arpbind's working behavior
+    sysctl -qw net.ipv4.conf."$device".arp_ignore=1
+    sysctl -qw net.ipv4.conf."$device".arp_announce=2
+    sysctl -qw net.ipv4.conf."$device".arp_filter=1
+
+    log "interface $device enforced (mode=reply_only)"
+}
+
+# ── Admin safeguard ────────────────────────────────────────────────
+collect_admin_ips() {
+    local ips="" ip conn
+    [ -n "$SSH_CONNECTION" ] && ips=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+
+    for conn in $(netstat -nt 2>/dev/null | awk '$4 ~ /:(80|443)$/ {print $5}'); do
+        ip=$(echo "$conn" | sed 's/:[0-9]*$//')
+        case "$ip" in 127.*|0.*|::*|"") continue ;; esac
+        ips="$ips $ip"
+    done
+
+    echo "$ips" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '
+    return 0
+}
+
+admin_safeguard() {
+    cfg_is_on admin || return 0
+    local admin_ips
+    admin_ips=$(collect_admin_ips)
+    [ -z "$admin_ips" ] && { log "no admin sessions detected"; return 0; }
+
+    local ip mac dev
+    for ip in $admin_ips; do
+        mac=$(awk -v ip="$ip" '$1 == ip {print $4}' /proc/net/arp)
+        dev=$(awk -v ip="$ip" '$1 == ip {print $6}' /proc/net/arp)
+        [ -n "$mac" ] && [ "$mac" != "00:00:00:00:00:00" ] || continue
+        iface_exists "$dev" || continue
+
+        log "admin safeguard: $ip ($mac) on $dev"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') $ip $mac $dev" \
+            >> /tmp/access_shield_admin_safeguard.log 2>/dev/null
+    done
+}
+
+# ── Lifecycle ──────────────────────────────────────────────────────
+start_service() {
+    cfg_is_on enabled || { log "master OFF — no action"; return 0; }
+    log "starting (table=$NFT_TABLE)"
+
+    # Snapshot before any modification
+    snapshot_dhcp
+
+    # Reset our own state (never touch arpbind's)
+    purge_nft
+    purge_our_dhcp
+
+    # Create fresh table
+    nft add table inet "$NFT_TABLE" 2>/dev/null
+
+    # Load config + apply
+    config_load "$CFG"
+    admin_safeguard
+    config_foreach apply_interface interface
+
+    # Commit DHCP changes safely
+    uci -q commit dhcp 2>/dev/null
+
+    # Reload dnsmasq safely
+    if ! safe_dnsmasq_reload; then
+        err "startup failed — rolling back"
+        purge_nft
+        purge_our_dhcp
+        restore_dhcp
+        return 1
+    fi
+
+    log "ready — $(nft list table inet $NFT_TABLE 2>/dev/null | grep -c 'accept\|drop') rules active"
+}
+
+stop_service() {
+    log "stopping"
+    purge_nft
+    purge_our_dhcp
+
+    # Reset sysctls on any interface that was reply_only
+    config_load "$CFG"
+    reset_sysctl() {
+        local s="$1" d m
+        config_get d "$s" device
+        config_get m "$s" mode
+        [ "$m" = "reply_only" ] && iface_exists "$d" && {
+            sysctl -qw net.ipv4.conf."$d".arp_ignore=1
+            sysctl -qw net.ipv4.conf."$d".arp_announce=0
+            sysctl -qw net.ipv4.conf."$d".arp_filter=0
+        }
+    }
+    config_foreach reset_sysctl interface
+    log "stopped"
+}
+
+reload_service() { stop_service; start_service; }
+
+service_triggers() {
+    procd_add_reload_trigger "$CFG" "dhcp"
+}
+
+# ── CLI ────────────────────────────────────────────────────────────
+status() {
+    echo "=== access-shield status ==="
+    echo "master:     $(cfg enabled)"
+    echo "table:      $NFT_TABLE"
+    echo "rules:      $(nft list table inet $NFT_TABLE 2>/dev/null | grep -c 'accept\|drop')"
+    echo "dhcp mirror: $(uci show dhcp 2>/dev/null | grep -c "allocated_by='$MARKER'")"
+    echo ""
+    echo "Bridges:"
+    for d in /sys/class/net/*/bridge; do
+        iface=$(basename "$(dirname "$d")")
+        rules=$(nft list chain inet "$NFT_TABLE" "${iface}_shield" 2>/dev/null | grep -c 'accept\|drop')
+        printf "  %-12s rules=%s\n" "$iface" "$rules"
+    done
+}
+extra_command "status" "Print operational status"

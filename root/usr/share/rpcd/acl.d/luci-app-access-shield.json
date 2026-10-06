@@ -1,0 +1,29 @@
+{
+  "luci-app-access-shield": {
+    "description": "Access Shield — configuration and RPC",
+    "read": {
+      "uci": ["access_shield", "dhcp", "network", "firewall", "wireless"],
+      "ubus": {
+        "luci.access_shield": ["*"],
+        "service": ["list"]
+      },
+      "file": {
+        "/etc/config/access_shield": ["read"],
+        "/tmp/access_shield_admin_safeguard.log": ["read"],
+        "/tmp/dhcp.leases": ["read"],
+        "/proc/net/nf_conntrack": ["read"]
+      }
+    },
+    "write": {
+      "uci": ["access_shield", "wireless"],
+      "ubus": {
+        "luci.access_shield": ["*"],
+        "service": ["reload"]
+      },
+      "file": {
+        "/etc/init.d/access-shield": ["exec"],
+        "/usr/bin/access-shield-migrate": ["exec"]
+      }
+    }
+  }
+}

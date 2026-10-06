@@ -1,0 +1,94 @@
+#!/bin/sh
+# access-shield-traffic — per-IP byte rate snapshot
+# Reads conntrack, computes bytes/sec per device since previous call.
+
+DIR=/tmp/access_shield_traffic
+mkdir -p "$DIR"
+CUR="$DIR/current.tsv"
+PRV="$DIR/previous.tsv"
+TSF="$DIR/timestamp"
+JOIN=/tmp/access_shield_traffic_join.$$
+
+NOW=$(date +%s)
+
+# Step 1 — Aggregate conntrack bytes by IP + direction
+awk '
+{
+    cur_src = ""; cur_dst = ""
+    for (i = 1; i <= NF; i++) {
+        if ($i ~ /^src=/) cur_src = substr($i, 5)
+        else if ($i ~ /^dst=/) cur_dst = substr($i, 5)
+        else if ($i ~ /^bytes=/) {
+            b = substr($i, 7) + 0
+            if (cur_src != "") up[cur_src] += b
+            if (cur_dst != "") dn[cur_dst] += b
+        }
+    }
+}
+END {
+    for (ip in up) print ip "|U|" up[ip]
+    for (ip in dn) print ip "|D|" dn[ip]
+}
+' /proc/net/nf_conntrack 2>/dev/null | sort > "$CUR"
+
+# Step 2 — Delta time
+DT=1
+if [ -f "$TSF" ]; then
+    PREV_TS=$(cat "$TSF")
+    DT=$((NOW - PREV_TS))
+    [ "$DT" -lt 1 ] && DT=1
+    [ "$DT" -gt 120 ] && DT=1
+fi
+
+# Step 3 — Compute deltas vs previous
+if [ -f "$PRV" ]; then
+    awk -F'|' '
+    FNR==NR { prev[$1"|"$2] = $3 + 0; next }
+    {
+        key = $1"|"$2
+        cur = $3 + 0
+        p = prev[key] + 0
+        d = cur - p
+        if (d < 0) d = 0
+        print $1"|"$2"|"d
+        delete prev[key]
+    }
+    ' "$PRV" "$CUR" > "$JOIN"
+else
+    awk -F'|' '{ print $1"|"$2"|"$3 }' "$CUR" > "$JOIN"
+fi
+
+# Step 4 — Save current as previous
+cp "$CUR" "$PRV"
+echo "$NOW" > "$TSF"
+
+# Step 5 — Output JSON
+awk -F'|' -v dt="$DT" '
+{
+    ip = $1
+    dir = $2
+    delta = $3 + 0
+    if (dir == "U") up[ip] += delta
+    else if (dir == "D") down[ip] += delta
+}
+END {
+    printf "{\n"
+    printf "  \"interval\": %d,\n", dt
+    printf "  \"devices\": [\n"
+    first = 1
+    for (ip in up) all[ip] = 1
+    for (ip in down) all[ip] = 1
+    for (ip in all) {
+        if (!first) printf ",\n"
+        first = 0
+        up_rate = int(up[ip] / dt)
+        down_rate = int(down[ip] / dt)
+        total_rate = up_rate + down_rate
+        printf "    {\"ip\":\"%s\",\"up_bps\":%d,\"down_bps\":%d,\"total_bps\":%d}", ip, up_rate, down_rate, total_rate
+    }
+    printf "\n  ]\n"
+    printf "}\n"
+}
+' "$JOIN"
+
+rm -f "$JOIN"

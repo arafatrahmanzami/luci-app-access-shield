@@ -1,0 +1,22 @@
+# Backups
+*.tar.gz
+*.tar.bz2
+*.zip
+*.bak
+*.snapshot
+*.pre-*
+*.before-*
+
+# Editor
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.ipk
+*.apk
+/bin/

@@ -1,0 +1,9 @@
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$(uci -q get access_shield.settings.enabled)" = "1" ] || exit 0
+case "$INTERFACE" in
+    lan|LAN2|lan2|lan3|lanb|lan_fallback|guest|iot|hotspot)
+        /etc/init.d/access-shield reload >/dev/null 2>&1 &
+        ;;
+esac
+exit 0

@@ -1,0 +1,65 @@
+#!/bin/sh
+# Migration helper — reads legacy /etc/config/arpbind entries
+# and prints them as JSON candidates for selective import.
+# Does NOT modify anything. UI decides what to import.
+
+CFG="access_shield"
+MODE="${1:-scan}"
+
+case "$MODE" in
+    scan)
+        # Return list of arpbind entries as JSON
+        echo "{"
+        echo '  "arpbind": ['
+        idx=0
+        first=1
+        for s in $(uci show arpbind 2>/dev/null | grep '=arpbind$' | cut -d. -f2 | cut -d= -f1); do
+            ip=$(uci -q get arpbind.$s.ipaddr)
+            mac=$(uci -q get arpbind.$s.macaddr)
+            ifn=$(uci -q get arpbind.$s.ifname)
+            [ -z "$ip" ] && continue
+            [ -z "$mac" ] && continue
+            [ "$first" = "1" ] || echo ","
+            first=0
+            echo "    {\"ip\":\"$ip\",\"mac\":\"$mac\",\"iface\":\"$ifn\"}"
+        done
+        echo ""
+        echo '  ],'
+        echo '  "luci_commands": ['
+        grep -A2 "arpbind" /etc/config/luci 2>/dev/null | grep "option name" | \
+            sed 's/.*option name /    {"name": /;s/$/}/'
+        echo '  ]'
+        echo "}"
+        ;;
+    import)
+        # Import all arpbind entries (called by UI after user selects)
+        count=0
+        for s in $(uci show arpbind 2>/dev/null | grep '=arpbind$' | cut -d. -f2 | cut -d= -f1); do
+            ip=$(uci -q get arpbind.$s.ipaddr)
+            mac=$(uci -q get arpbind.$s.macaddr)
+            ifn=$(uci -q get arpbind.$s.ifname)
+            [ -z "$ip" ] && continue
+            [ -z "$mac" ] && continue
+            mac_lc=$(echo "$mac" | tr 'A-Z' 'a-z')
+            sec="mig_$(echo "$mac_lc" | tr -d ':')"
+            uci -q batch <<EOUCI
+set ${CFG}.${sec}=binding
+set ${CFG}.${sec}.enabled='1'
+set ${CFG}.${sec}.name='migrated-device'
+set ${CFG}.${sec}.iface='${ifn}'
+set ${CFG}.${sec}.ip='${ip}'
+set ${CFG}.${sec}.mac='${mac_lc}'
+set ${CFG}.${sec}.leasetime='infinite'
+set ${CFG}.${sec}.block_internet='0'
+EOUCI
+            count=$((count + 1))
+        done
+        uci -q commit "$CFG"
+        echo "Imported $count bindings."
+        ;;
+    *)
+        echo "Usage: access-shield-migrate [scan|import]"
+        exit 1
+        ;;
+esac
+exit 0

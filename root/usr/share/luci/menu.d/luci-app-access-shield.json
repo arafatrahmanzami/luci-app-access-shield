@@ -1,0 +1,86 @@
+{
+  "admin/network/access_shield": {
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-access-shield"
+      ]
+    },
+    "order": 31,
+    "title": "Access Shield"
+  },
+  "admin/network/access_shield/dashboard": {
+    "action": {
+      "path": "access_shield/dashboard",
+      "type": "view"
+    },
+    "order": 10,
+    "title": "Dashboard"
+  },
+  "admin/network/access_shield/firewall": {
+    "action": {
+      "path": "access_shield/firewall",
+      "type": "view"
+    },
+    "order": 45,
+    "title": "Firewall"
+  },
+  "admin/network/access_shield/help": {
+    "action": {
+      "path": "access_shield/help",
+      "type": "view"
+    },
+    "order": 95,
+    "title": "Help"
+  },
+  "admin/network/access_shield/interfaces": {
+    "action": {
+      "path": "access_shield/interfaces",
+      "type": "view"
+    },
+    "order": 30,
+    "title": "Interfaces"
+  },
+  "admin/network/access_shield/settings": {
+    "action": {
+      "path": "access_shield/settings",
+      "type": "view"
+    },
+    "order": 90,
+    "title": "Settings"
+  },
+  "admin/network/access_shield/setup": {
+    "action": {
+      "path": "access_shield/setup",
+      "type": "view"
+    },
+    "order": 5,
+    "title": "Setup"
+  },
+  "admin/network/access_shield/status": {
+    "action": {
+      "path": "access_shield/status",
+      "type": "view"
+    },
+    "order": 6,
+    "title": "Status"
+  },
+  "admin/network/access_shield/traffic": {
+    "action": {
+      "path": "access_shield/traffic",
+      "type": "view"
+    },
+    "order": 20,
+    "title": "Traffic"
+  },
+  "admin/network/access_shield/wireless": {
+    "action": {
+      "path": "access_shield/wireless",
+      "type": "view"
+    },
+    "order": 40,
+    "title": "Wireless"
+  }
+}
