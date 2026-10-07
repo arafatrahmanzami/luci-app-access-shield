@@ -31,6 +31,57 @@ do_list_bridges() {
     json_dump
 }
 
+do_add_bridge() {
+    local iface label sec d s i
+    json_get_var iface "iface"
+    json_get_var label "label"
+
+    iface=$(echo "$iface" | tr -d ' \t\n')
+    [ -z "$iface" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "iface required"; json_dump; return; }
+
+    if [ ! -d "/sys/class/net/$iface/bridge" ]; then
+        json_init; json_add_boolean "ok" 0
+        json_add_string "error" "not a bridge: $iface"
+        json_dump; return
+    fi
+
+    for s in $(uci show access_shield 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1); do
+        d=$(uci -q get access_shield.$s.device)
+        if [ "$d" = "$iface" ]; then
+            json_init; json_add_boolean "ok" 0
+            json_add_string "error" "already managed"
+            json_add_string "section" "$s"
+            json_dump; return
+        fi
+    done
+
+    sec=$(echo "$iface" | tr -d '-')
+    if uci -q get access_shield.$sec >/dev/null 2>&1; then
+        i=2
+        while uci -q get access_shield.${sec}${i} >/dev/null 2>&1; do i=$((i+1)); done
+        sec="${sec}${i}"
+    fi
+
+    [ -z "$label" ] && label="$iface"
+
+    uci -q batch <<EOS
+set access_shield.${sec}=interface
+set access_shield.${sec}.device='${iface}'
+set access_shield.${sec}.label='${label}'
+set access_shield.${sec}.mode='disabled'
+set access_shield.${sec}.enabled='0'
+set access_shield.${sec}.dhcp_allow='1'
+set access_shield.${sec}.default_drop='1'
+EOS
+    uci -q commit access_shield
+    /etc/init.d/access-shield reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_add_string "section" "$sec"
+    json_dump
+}
+
 do_status() {
     json_init
     json_add_string "enabled"     "$(cfg enabled)"
@@ -1097,6 +1148,7 @@ case "$1" in
     list)
         json_init
         json_add_object "list_bridges"; json_close_object
+        json_add_object "add_bridge";   json_close_object
         json_add_object "status";        json_close_object
         json_add_object "sync";          json_close_object
         json_add_object "migrate_scan";  json_close_object
@@ -1133,6 +1185,7 @@ case "$1" in
         [ -n "$input" ] && json_load "$input" 2>/dev/null || json_init
         case "$method" in
             list_bridges)   do_list_bridges ;;
+            add_bridge)     do_add_bridge ;;
             status)         do_status ;;
             sync)           do_sync ;;
             migrate_scan)   do_migrate_scan ;;

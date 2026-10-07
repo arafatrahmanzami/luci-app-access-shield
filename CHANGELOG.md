@@ -4,6 +4,28 @@ All notable changes to Access Shield are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r6] — 2026-10-07
+
+### Added
+
+**Interfaces tab — auto-discovery of new kernel bridges**
+- The Interfaces tab now calls the existing `list_bridges` RPC and
+  renders an "Unmanaged bridges" table above the managed-bridge editor.
+  Each kernel bridge not yet tracked in UCI gets a row with its subnet,
+  operstate, an inline label input, and an **Adopt** button.
+- Adopting a bridge creates a new `access_shield.<name>=interface`
+  section with mode `disabled`, `enabled` `0`, `dhcp_allow` `1`, and
+  `default_drop` `1`. Enforcement stays OFF until the user explicitly
+  turns it on, so a freshly adopted bridge cannot lock anyone out.
+- The Unmanaged-bridges table hides itself when every kernel bridge is
+  already managed, so the UI is unchanged for existing setups.
+
+**rpcd — `add_bridge` method**
+- New `do_add_bridge` RPC: validates the target is a real kernel bridge
+  (`/sys/class/net/<iface>/bridge` exists), refuses if already managed,
+  generates a unique UCI section name, writes the new interface section,
+  commits, and reloads the enforcement service.
+
 ## [1.0.0-r5] — 2026-10-07
 
 ### Added
