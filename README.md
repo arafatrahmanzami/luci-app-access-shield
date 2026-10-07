@@ -4,7 +4,7 @@
 
 A modern LuCI application that enforces **MAC+IP whitelist** on any bridge — devices not on the list are isolated at the kernel level. Includes per-device internet block, rate limits, per-subnet shaping, temporary access tickets, wireless MAC filtering, and a live bandwidth monitor.
 
-**Release:** `v1.0.0-r6` — 2026-10-07 — by [@arafatrahmanzami](https://github.com/arafatrahmanzami)
+**Release:** `v1.0.0-r7` — 2026-10-07 — by [@arafatrahmanzami](https://github.com/arafatrahmanzami)
 
 Replaces `luci-app-arpbind` with a unified dashboard. Everything is configured from one modern UI — no more editing shell scripts or hunting through UCI.
 
@@ -175,16 +175,16 @@ The app has a built-in **admin safeguard** that auto-binds your current session,
 
     cd /tmp && \
     opkg update && \
-    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r6/luci-app-access-shield_1.0.0-r6_all.ipk && \
-    opkg install luci-app-access-shield_1.0.0-r6_all.ipk && \
+    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r7/luci-app-access-shield_1.0.0-r7_all.ipk && \
+    opkg install luci-app-access-shield_1.0.0-r7_all.ipk && \
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* && \
     /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
 
 **OpenWrt ≥ 25.12 — apk:**
 
     cd /tmp && \
-    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r6/luci-app-access-shield-1.0.0-r6.apk && \
-    apk add --allow-untrusted luci-app-access-shield-1.0.0-r6.apk && \
+    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r7/luci-app-access-shield-1.0.0-r7.apk && \
+    apk add --allow-untrusted luci-app-access-shield-1.0.0-r7.apk && \
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* && \
     /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
 
@@ -193,12 +193,12 @@ The app has a built-in **admin safeguard** that auto-binds your current session,
     cd /tmp && \
     if command -v apk >/dev/null 2>&1; then \
       echo "Detected apk — OpenWrt 25.12+" && \
-      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r6/luci-app-access-shield-1.0.0-r6.apk && \
+      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r7/luci-app-access-shield-1.0.0-r7.apk && \
       apk add --allow-untrusted access-shield.pkg; \
     else \
       echo "Detected opkg — OpenWrt 24.10 or older" && \
       opkg update && \
-      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r6/luci-app-access-shield_1.0.0-r6_all.ipk && \
+      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r7/luci-app-access-shield_1.0.0-r7_all.ipk && \
       opkg install access-shield.pkg; \
     fi && \
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* && \
@@ -211,13 +211,13 @@ Copy the `.ipk` / `.apk` to `/tmp` on the router via WinSCP / FileZilla / SCP, t
 **OpenWrt ≤ 24.10 (opkg):**
 
     cd /tmp
-    opkg install luci-app-access-shield_1.0.0-r6_all.ipk
+    opkg install luci-app-access-shield_1.0.0-r7_all.ipk
     /etc/init.d/uhttpd restart
 
 **OpenWrt ≥ 25.12 (apk):**
 
     cd /tmp
-    apk --allow-untrusted add /tmp/luci-app-access-shield-1.0.0-r6.apk
+    apk --allow-untrusted add /tmp/luci-app-access-shield-1.0.0-r7.apk
     /etc/init.d/uhttpd restart
 
 ### 4. Overlay tarball (manual file install)
@@ -234,11 +234,11 @@ goes directly into `/`.
 and start the services, clear the LuCI cache.
 
     # On PC
-    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r6/luci-app-access-shield-1.0.0-r6-overlay.tar.gz
-    scp luci-app-access-shield-1.0.0-r6-overlay.tar.gz root@192.168.10.1:/tmp/
+    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r7/luci-app-access-shield-1.0.0-r7-overlay.tar.gz
+    scp luci-app-access-shield-1.0.0-r7-overlay.tar.gz root@192.168.10.1:/tmp/
     
     # On router
-    cd / && tar xzf /tmp/luci-app-access-shield-1.0.0-r6-overlay.tar.gz
+    cd / && tar xzf /tmp/luci-app-access-shield-1.0.0-r7-overlay.tar.gz
     
     # Replicate postinst: seed config on first install only
     [ -f /etc/config/access_shield ] || /etc/uci-defaults/99-access-shield
@@ -809,7 +809,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
     # Navigate: LuCI → Applications → luci-app-access-shield → <M>
     
     make package/luci-app-access-shield/compile V=s
-    # Output: bin/packages/<arch>/base/luci-app-access-shield_1.0.0-r6_all.ipk
+    # Output: bin/packages/<arch>/base/luci-app-access-shield_1.0.0-r7_all.ipk
 
 **Short version (all in one):**
 
