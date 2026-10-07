@@ -16,7 +16,7 @@
       "path": "access_shield/dashboard",
       "type": "view"
     },
-    "order": 10,
+    "order": 1,
     "title": "Dashboard"
   },
   "admin/network/access_shield/firewall": {

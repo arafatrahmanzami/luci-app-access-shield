@@ -4,6 +4,31 @@ All notable changes to Access Shield are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r5] - 2026-10-07
+
+### Added
+
+**Dashboard - manual "Add Device by MAC"**
+- New button at the top of the Dashboard opens a modal to bind a device
+  by MAC, IP, interface, and name, without the device needing to appear
+  in the discovery list first.
+- Essential on strictly-enforced bridges (reply_only + default_drop=1),
+  where unbound devices are dropped at prerouting before they can DHCP,
+  so they never appear in list_devices. Previously the only way to add
+  such a device was to SSH in and edit UCI by hand.
+- Refuses MACs that are already bound (do_bind_device would otherwise
+  reset block_internet to 0 and silently unblock the device).
+- Validates MAC (aa:bb:cc:dd:ee:ff) and IPv4 formats.
+
+### Fixed
+
+**Dashboard - dead click on empty-state row**
+- The "No devices match the current filter" row had a click handler that
+  referenced d.mac, but d was scoped to the preceding forEach loop and
+  did not exist in the empty-state block. Clicking the row threw
+  ReferenceError: d is not defined inside the event handler and did
+  nothing visible to the user. Handler removed; row is now static.
+
 ## [1.0.0-r4] — 2026-10-07
 
 ### Fixed

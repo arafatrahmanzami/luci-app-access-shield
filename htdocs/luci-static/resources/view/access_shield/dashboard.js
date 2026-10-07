@@ -476,6 +476,74 @@ function openBindModal(d) {
             ]);
         }
 
+        function openAddModal() {
+            var macInput  = E('input', { 'type': 'text', 'placeholder': 'aa:bb:cc:dd:ee:ff', 'style': 'width:100%;padding:6px;font-family:monospace' });
+            var nameInput = E('input', { 'type': 'text', 'placeholder': _('e.g. Front Door Cam'), 'style': 'width:100%;padding:6px' });
+            var ipInput   = E('input', { 'type': 'text', 'placeholder': '192.168.200.x', 'style': 'width:100%;padding:6px' });
+            var ifaceSelect = E('select', { 'style': 'width:100%;padding:6px' }, [
+                E('option', { 'value': 'br-lan2', 'selected': true }, 'br-lan2'),
+                E('option', { 'value': 'br-lan' }, 'br-lan'),
+                E('option', { 'value': 'br-lan3' }, 'br-lan3')
+            ]);
+
+            ui.showModal(_('Add Device by MAC'), [
+                E('p', { 'style': 'font-size:12px;color:#888;margin:0 0 8px 0' },
+                    _('For devices that are not visible in the Dashboard yet - offline, pre-provisioning, or dropped by the shield before DHCP.')),
+                E('div', { 'class': 'cbi-value' }, [
+                    E('label', { 'class': 'cbi-value-title' }, _('MAC')),
+                    E('div', { 'class': 'cbi-value-field' }, [ macInput ])
+                ]),
+                E('div', { 'class': 'cbi-value' }, [
+                    E('label', { 'class': 'cbi-value-title' }, _('Name')),
+                    E('div', { 'class': 'cbi-value-field' }, [ nameInput ])
+                ]),
+                E('div', { 'class': 'cbi-value' }, [
+                    E('label', { 'class': 'cbi-value-title' }, _('IP address')),
+                    E('div', { 'class': 'cbi-value-field' }, [ ipInput ])
+                ]),
+                E('div', { 'class': 'cbi-value' }, [
+                    E('label', { 'class': 'cbi-value-title' }, _('Interface')),
+                    E('div', { 'class': 'cbi-value-field' }, [ ifaceSelect ])
+                ]),
+                E('p', { 'style': 'font-size:12px;color:#888' },
+                    _('Leave IP blank for 0.0.0.0 (device will DHCP after being whitelisted).')),
+                E('div', { 'class': 'right' }, [
+                    E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
+                    ' ',
+                    E('button', {
+                        'class': 'btn cbi-button-action',
+                        'click': function() {
+                            var mac = macInput.value.trim().toLowerCase();
+                            var nm  = nameInput.value.trim();
+                            var ip  = ipInput.value.trim();
+                            var ifc = ifaceSelect.value;
+
+                            if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac)) {
+                                ui.addNotification(null, E('p', {}, _('Invalid MAC. Use aa:bb:cc:dd:ee:ff format.')), 'error');
+                                return;
+                            }
+                            if (bindingByMac[mac]) {
+                                ui.addNotification(null, E('p', {}, _('MAC already bound. Use Edit on the device row to change it.')), 'warning');
+                                return;
+                            }
+                            if (ip && !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+                                ui.addNotification(null, E('p', {}, _('Invalid IP address.')), 'error');
+                                return;
+                            }
+
+                            ui.hideModal();
+                            callBindDevice(mac, ip, ifc, nm)
+                                .then(function() {
+                                    ui.addNotification(null, E('p', {}, _('Device added.')), 'info');
+                                    return new Promise(function(r) { setTimeout(r, 1500); });
+                                })
+                                .then(refresh);
+                        }
+                    }, _('Add'))
+                ])
+            ]);
+        }
+
         function buildView() {
             var all = mergedDevices();
             var list = applyFilters(all);
@@ -494,11 +562,25 @@ function openBindModal(d) {
                 E('strong', {}, _('Blocked: ')), String(blocked)
             ]);
 
+            var addRow = E('div', { 'class': 'cbi-section' }, [
+                E('button', {
+                    'class': 'btn cbi-button-action',
+                    'click': function() { openAddModal(); }
+                }, '+ ' + _('Add Device by MAC'))
+            ]);
+
             var searchInput = E('input', {
                 'type': 'text', 'placeholder': _('Search name / IP / MAC / SSID'),
                 'value': state.search, 'style': 'padding:4px;width:250px',
-                'input': function(ev) { state.search = ev.target.value; repaint(); }
+                'input': function(ev) {
+                    state.search = ev.target.value;
+                    state._searchCursor = ev.target.selectionStart;
+                    state._refocusSearch = true;
+                    repaint();
+                }
             });
+
+            state._searchInputRef = searchInput;
 
             function mkSelect(label, key, options) {
                 return E('select', {
@@ -548,11 +630,8 @@ function openBindModal(d) {
             ];
 
             if (list.length === 0) {
-                rows.push(E('tr', { 'class': 'tr', 'style': 'cursor:pointer',
-                    'click': function(ev) {
-                        if (ev.target.tagName === 'BUTTON' || ev.target.closest('button')) return;
-                        window.location.href = L.url('admin/network/access_shield/details') + '?mac=' + encodeURIComponent(d.mac);
-                    } }, [
+                // empty state: static, no device to open - do NOT add a click handler referencing d
+                rows.push(E('tr', { 'class': 'tr' }, [
                     E('td', { 'class': 'td', 'colspan': 9, 'style': 'text-align:center;padding:20px;color:#888' },
                         _('No devices match the current filter.'))
                 ]));
@@ -664,6 +743,7 @@ function openBindModal(d) {
 
             return E('div', {}, [
                 stats,
+                addRow,
                 filterRow,
                 E('table', { 'class': 'table' }, rows),
                 E('p', { 'style': 'margin-top:1em;font-size:12px;color:#888' },
@@ -673,8 +753,15 @@ function openBindModal(d) {
         }
 
         function repaint() {
+            var wantFocus = state._refocusSearch;
+            var cursorPos = state._searchCursor;
+            state._refocusSearch = false;
             while (container.firstChild) container.removeChild(container.firstChild);
             container.appendChild(buildView());
+            if (wantFocus && state._searchInputRef) {
+                state._searchInputRef.focus();
+                try { state._searchInputRef.setSelectionRange(cursorPos, cursorPos); } catch(e) {}
+            }
         }
 
         function refresh() {
