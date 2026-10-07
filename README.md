@@ -4,7 +4,7 @@
 
 A modern LuCI application that enforces **MAC+IP whitelist** on any bridge — devices not on the list are isolated at the kernel level. Includes per-device internet block, rate limits, per-subnet shaping, temporary access tickets, wireless MAC filtering, and a live bandwidth monitor.
 
-**Release:** `v1.0.0` — 2026-10-06 — by [@arafatrahmanzami](https://github.com/arafatrahmanzami)
+**Release:** `v1.0.0-r5` — 2026-10-07 — by [@arafatrahmanzami](https://github.com/arafatrahmanzami)
 
 Replaces `luci-app-arpbind` with a unified dashboard. Everything is configured from one modern UI — no more editing shell scripts or hunting through UCI.
 
@@ -101,6 +101,9 @@ Access Shield is ideal for:
 
 **Device management**
 - Unified device inventory (DHCP + ARP + IPv6 + WiFi association)
+- **+ Add Device by MAC** — bind a device that isn't visible in the
+  inventory yet (offline, pre-provisioning, or dropped by the shield
+  before DHCP). See [Adding a device that isn't visible yet](#adding-a-device-that-isnt-visible-yet).
 - Per-row Edit / Block / Allow / Bind / Unbind / Rename / Issue Ticket
 - Friendly device aliases override DHCP hostnames
 - Search + 4 filters (bound, state, link, access)
@@ -297,6 +300,9 @@ Go to **Dashboard**:
 
 - Click **Bind** on any discovered device
 - Or click **Scan & Bind** to bulk-add devices from ARP + DHCP
+- For a device that isn't visible in the list (offline, pre-provisioning,
+  or dropped by the shield before DHCP on a `reply_only` bridge), click
+  **+ Add Device by MAC** at the top and enter MAC / name / IP / iface.
 - Each binding shows: Name, IP, MAC, Interface, Link, Status, Access
 
 ### Step 3 — Verify Enforcement
@@ -448,6 +454,44 @@ Or use the **Settings** tab → **Migration from legacy arpbind** section.
 
 ---
 
+## Adding a device that isn't visible yet
+
+On a strictly-enforced bridge (`reply_only` + `default_drop=1`), devices
+that are **not yet in the whitelist** get their IPv4 packets dropped at
+the prerouting hook — before they can reach dnsmasq for a DHCP lease.
+That is the whole point of the shield. But it also means such devices
+**do not appear in the Dashboard inventory at all** — the discovery
+script reads DHCP leases, ARP, IPv6 neighbors, and WiFi associations,
+and an unbound device on a protected bridge never shows up in any of
+them.
+
+The **+ Add Device by MAC** button at the top of the Dashboard solves
+this. It opens a modal that binds a device by MAC, IP, interface, and
+name, using the same `bind_device` RPC that the per-row Bind button
+uses. The device does not need to be visible, online, or even powered
+on.
+
+Typical uses:
+
+- **Pre-provisioning** — add cameras / IoT before they arrive, so the
+  first time they boot they get a lease and are whitelisted.
+- **Post-reinstall** — device was unbound and disappeared from the
+  inventory; re-add it with the same MAC and it comes back.
+- **Offline device** — bind a device that's currently switched off.
+- **Recovery** — if a device can't DHCP on a `reply_only` bridge and
+  therefore can't be seen, add it manually, then it can DHCP.
+
+The modal refuses MACs that are already bound — use **Edit** on the
+device row to change an existing binding. `bind_device` resets the
+`block_internet` flag, so re-adding an already-blocked device would
+silently unblock it; the duplicate guard prevents that.
+
+Leave **IP address** blank to bind with a placeholder `0.0.0.0`. The
+device will obtain a real DHCP lease on next connect (as long as
+`dhcp_allow` is on for that bridge).
+
+---
+
 ## Multi-Bridge Support
 
 Access Shield protects **any number of bridges simultaneously**. Each binding specifies its own interface.
@@ -545,6 +589,20 @@ The wizard's **Migration** button imports arpbind bindings without disturbing th
 
       /etc/init.d/access-shield-block reload
 
+### "Device doesn't appear in the Dashboard"
+
+This is expected on a strictly-enforced bridge (`reply_only` +
+`default_drop=1`). Unbound devices are dropped at prerouting before
+they can DHCP, so they show up in none of the discovery sources
+(DHCP leases, ARP, IPv6 neighbors, WiFi associations).
+
+Fix: click **+ Add Device by MAC** at the top of the Dashboard and
+enter the MAC, name, IP (optional), and interface. The device does
+not need to be visible or online to be bound.
+
+See [Adding a device that isn't visible yet](#adding-a-device-that-isnt-visible-yet)
+for details.
+
 ### "Ticket was issued but device still has no internet"
 
 - Verify accept rule exists: `nft list table inet access_shield_block | grep accept`
@@ -633,6 +691,38 @@ Recovery options, in order of preference:
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for full history.
+
+### [1.0.0-r5] — 2026-10-07
+
+**Added**
+
+- Dashboard **+ Add Device by MAC** button — bind a device by MAC / IP /
+  iface / name without it appearing in the discovery list first. Solves
+  the case where a strictly-enforced bridge drops an unbound device at
+  prerouting before it can DHCP, so it never appears in the inventory.
+- Duplicate-MAC guard (refuses to re-bind; `do_bind_device` would
+  otherwise reset `block_internet`).
+- Client-side MAC + IPv4 validation.
+
+**Fixed**
+
+- Dashboard search input no longer loses focus after each keystroke.
+- Dashboard empty-state row no longer throws `ReferenceError: d is not
+  defined` when clicked (pre-existing bug, made visible by the new Add
+  Device workflow).
+- Menu landing page changed from Setup to Dashboard.
+
+### [1.0.0-r4] — 2026-10-07
+
+**Fixed**
+
+- Interfaces tab **Save & Apply** now actually commits to UCI.
+- `dhcp_allow` and `default_drop` per-bridge toggles are now read by
+  `apply_interface()` — previously they were dead fields.
+
+**Added**
+
+- Layered-enforcement documentation (Help tab + README).
 
 ### [1.0.0] — 2026-10-06
 
