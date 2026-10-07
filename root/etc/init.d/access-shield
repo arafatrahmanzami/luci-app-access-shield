@@ -150,10 +150,12 @@ EOS
 # ── Per-interface application ──────────────────────────────────────
 apply_interface() {
     local section="$1"
-    local device mode enabled
+    local device mode enabled dhcp_allow default_drop
     config_get device "$section" device
     config_get mode "$section" mode
     config_get_bool enabled "$section" enabled 0
+    config_get_bool dhcp_allow "$section" dhcp_allow 1
+    config_get_bool default_drop "$section" default_drop 1
 
     [ "$enabled" = "1" ] || return 0
     [ "$mode" = "reply_only" ] || return 0
@@ -165,24 +167,28 @@ apply_interface() {
     nft add chain inet "$NFT_TABLE" "${device}_shield" \
         "{ type filter hook prerouting priority mangle ; policy accept ; }" 2>/dev/null
 
-    # Allow DHCP
-    nft add rule inet "$NFT_TABLE" "${device}_shield" \
-        iifname "$device" udp dport 67 accept
+    # Allow DHCP (only if dhcp_allow=1)
+    if [ "$dhcp_allow" = "1" ]; then
+        nft add rule inet "$NFT_TABLE" "${device}_shield" \
+            iifname "$device" udp dport 67 accept
+    fi
 
     # Bindings for this interface
     CURRENT_DEVICE="$device"
     config_foreach process_binding binding
 
-    # Default IPv4 drop
-    nft add rule inet "$NFT_TABLE" "${device}_shield" \
-        iifname "$device" meta nfproto ipv4 drop comment "access_shield_whitelist_drop"
+    # Default IPv4 drop (only if default_drop=1)
+    if [ "$default_drop" = "1" ]; then
+        nft add rule inet "$NFT_TABLE" "${device}_shield" \
+            iifname "$device" meta nfproto ipv4 drop comment "access_shield_whitelist_drop"
+    fi
 
     # Sysctls matching arpbind's working behavior
     sysctl -qw net.ipv4.conf."$device".arp_ignore=1
     sysctl -qw net.ipv4.conf."$device".arp_announce=2
     sysctl -qw net.ipv4.conf."$device".arp_filter=1
 
-    log "interface $device enforced (mode=reply_only)"
+    log "interface $device enforced (mode=reply_only, dhcp_allow=$dhcp_allow, default_drop=$default_drop)"
 }
 
 # ── Admin safeguard ────────────────────────────────────────────────
