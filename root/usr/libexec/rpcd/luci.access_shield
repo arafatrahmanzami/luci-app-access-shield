@@ -39,9 +39,13 @@ do_add_bridge() {
     iface=$(echo "$iface" | tr -d ' \t\n')
     [ -z "$iface" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "iface required"; json_dump; return; }
 
-    if [ ! -d "/sys/class/net/$iface/bridge" ]; then
+    if [ -d "/sys/class/net/$iface/bridge" ]; then
+        : # real kernel bridge, accepted
+    elif echo "$iface" | grep -q '^br-'; then
+        : # br-* name, accepted for pre-provisioning (must exist before enabling)
+    else
         json_init; json_add_boolean "ok" 0
-        json_add_string "error" "not a bridge: $iface"
+        json_add_string "error" "not a bridge and not a br-* name: $iface"
         json_dump; return
     fi
 
@@ -73,6 +77,42 @@ set access_shield.${sec}.enabled='0'
 set access_shield.${sec}.dhcp_allow='1'
 set access_shield.${sec}.default_drop='1'
 EOS
+    uci -q commit access_shield
+    /etc/init.d/access-shield reload >/dev/null 2>&1 &
+
+    json_init
+    json_add_boolean "ok" 1
+    json_add_string "section" "$sec"
+    json_dump
+}
+
+do_remove_interface() {
+    local iface sec d s
+    json_get_var iface "iface"
+
+    iface=$(echo "$iface" | tr -d ' \t\n')
+    [ -z "$iface" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "iface required"; json_dump; return; }
+
+    sec=""
+    for s in $(uci show access_shield 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1); do
+        d=$(uci -q get access_shield.$s.device)
+        [ "$d" = "$iface" ] && { sec="$s"; break; }
+    done
+
+    if [ -z "$sec" ]; then
+        json_init; json_add_boolean "ok" 0
+        json_add_string "error" "not managed"
+        json_dump; return
+    fi
+
+    # Safety: only remove true orphans. Refuse if interface still exists in kernel.
+    if [ -d "/sys/class/net/$iface" ]; then
+        json_init; json_add_boolean "ok" 0
+        json_add_string "error" "interface still exists in kernel; disable it instead of removing"
+        json_dump; return
+    fi
+
+    uci -q delete access_shield."$sec"
     uci -q commit access_shield
     /etc/init.d/access-shield reload >/dev/null 2>&1 &
 
@@ -1149,6 +1189,7 @@ case "$1" in
         json_init
         json_add_object "list_bridges"; json_close_object
         json_add_object "add_bridge";   json_close_object
+        json_add_object "remove_interface"; json_close_object
         json_add_object "status";        json_close_object
         json_add_object "sync";          json_close_object
         json_add_object "migrate_scan";  json_close_object
@@ -1186,6 +1227,7 @@ case "$1" in
         case "$method" in
             list_bridges)   do_list_bridges ;;
             add_bridge)     do_add_bridge ;;
+            remove_interface) do_remove_interface ;;
             status)         do_status ;;
             sync)           do_sync ;;
             migrate_scan)   do_migrate_scan ;;

@@ -4,6 +4,40 @@ All notable changes to Access Shield are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r7] — 2026-10-07
+
+### Added
+
+**Interfaces tab — orphan detection + cleanup**
+- The Interfaces tab now compares each `access_shield.*=interface` UCI
+  section against the kernel interface list. Sections whose `device`
+  no longer exists in `/sys/class/net/` are flagged as orphans and
+  shown in a dedicated warning table above the other tables, each with
+  a **Remove** button and confirmation modal.
+- Enforcement already skipped orphans safely via the `iface_exists`
+  guard in `apply_interface()`, but the UI gave no visibility.
+
+**Interfaces tab — "+ Add Interface by Name"**
+- Manual add button for bridges that auto-discovery cannot see,
+  primarily pre-provisioning a `br-*` name that does not yet exist in
+  the kernel. Accepts any existing bridge or a `br-*` name; rejects
+  everything else.
+- Adopted sections still default to mode `disabled`, `enabled` `0`, so
+  a mis-typed name cannot lock anyone out.
+- If a section's device does not yet exist in the kernel, the new
+  orphan-detection table flags it — the user sees the honest state.
+
+**rpcd — `remove_interface` method**
+- New `do_remove_interface` RPC: refuses to delete any section whose
+  interface still exists in the kernel. Only true orphans can be
+  removed. Hard safety guard, not a UI check — even a direct ubus
+  call cannot remove a healthy bridge.
+
+**rpcd — `add_bridge` relaxed for pre-provisioning**
+- Previously rejected any name without a `/sys/class/net/<iface>/bridge`
+  entry. Now also accepts `br-*` names for pre-provisioning. Non-bridge,
+  non-`br-*` names are still refused.
+
 ## [1.0.0-r6] — 2026-10-07
 
 ### Added
