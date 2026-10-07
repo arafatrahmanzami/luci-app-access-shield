@@ -539,9 +539,23 @@ Each bridge gets its own nftables chain within `access_shield_fw`. Rules are per
 **To add a new bridge after setup:**
 
 1. Go to **Interfaces** tab
-2. The bridge appears automatically if it's a Linux bridge with an IP
-3. Set mode to `reply_only` and enable
-4. Bind devices on **Dashboard** choosing the new interface
+2. The bridge appears automatically in **Unmanaged bridges** if it's a
+   Linux bridge (with or without an IP)
+3. Type a label, click **Adopt** — it moves to **Managed Bridges** with
+   mode `disabled` and enforcement OFF
+4. Set mode to `reply_only` and turn on **Enable** when ready
+5. Bind devices on **Dashboard** choosing the new interface
+
+**If auto-discovery misses a bridge** (rare), use **+ Add Interface by
+Name** at the top of the Interfaces tab. Accepts any existing bridge or
+a `br-*` name for pre-provisioning — a `br-*` name that does not yet
+exist in the kernel is accepted and appears in Managed Bridges with a
+`\u26a0 missing` badge until the kernel interface is created.
+
+**Orphaned sections** — if a kernel bridge is deleted but its UCI section
+remains, the Interfaces tab shows a warning table with a **Remove**
+button. Enforcement already skips orphans safely; the button just cleans
+up the leftover config.
 
 ### Per-bridge toggles — and why they sometimes appear to do nothing
 
@@ -720,6 +734,33 @@ Recovery options, in order of preference:
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for full history.
+
+### [1.0.0-r7] — 2026-10-07
+
+**Added**
+
+- Interfaces tab: **Orphaned sections** warning table — UCI sections
+  whose `device` no longer exists in the kernel are flagged with a
+  `\u26a0 missing` badge and a **Remove** button. Enforcement already
+  skipped them safely; this makes them visible and cleanable.
+- Interfaces tab: **+ Add Interface by Name** button — manually adopt a
+  `br-*` bridge before the kernel interface exists (pre-provisioning).
+- rpcd: `remove_interface` method with a hard guard — refuses to delete
+  any section whose interface still exists. Only true orphans removable.
+- rpcd: `add_bridge` relaxed to accept `br-*` names for pre-provisioning
+  in addition to existing kernel bridges.
+
+### [1.0.0-r6] — 2026-10-07
+
+**Added**
+
+- Interfaces tab: automatic discovery of new kernel bridges. Any bridge
+  present in `/sys/class/net/` but not yet in UCI appears in an
+  **Unmanaged bridges** table with an inline label input and an **Adopt**
+  button.
+- rpcd: `add_bridge` method validates the target is a real kernel bridge,
+  refuses duplicates, creates a unique section with safe defaults
+  (`mode=disabled`, `enabled=0`).
 
 ### [1.0.0-r5] — 2026-10-07
 
