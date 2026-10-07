@@ -470,6 +470,38 @@ Each bridge gets its own nftables chain within `access_shield_fw`. Rules are per
 3. Set mode to `reply_only` and enable
 4. Bind devices on **Dashboard** choosing the new interface
 
+### Per-bridge toggles — and why they sometimes appear to do nothing
+
+Each bridge has two toggles in the **Interfaces** tab:
+
+| Toggle | Meaning | Observable when |
+|---|---|---|
+| **Allow DHCP** (`dhcp_allow`) | When ON, DHCP packets (UDP 67) from devices on this bridge are accepted at the shield chain. When OFF, the accept rule is not emitted — devices cannot reach dnsmasq to obtain a lease. | dnsmasq has `dynamicdhcp=1` on this bridge's DHCP section. With `dynamicdhcp=0`, dnsmasq ignores unlisted MACs anyway — the toggle is masked. |
+| **Default drop IPv4** (`default_drop`) | When ON, the shield chain ends with a catch-all `meta nfproto ipv4 drop`. Non-whitelisted IPv4 dies at prerouting. When OFF, non-whitelisted IPv4 falls through to fw4's forward hook. | The firewall zone's forward policy is ACCEPT or a custom allowlist. With the OpenWrt default (`forward=REJECT`), fw4 already drops — the toggle is masked. |
+
+**Why does the toggle sometimes seem to do nothing?** Because enforcement
+is layered:
+
+1. `access_shield_fw` (prerouting, priority -150) — whitelist + toggles
+2. `access_shield_block` (forward, priority +5) — per-device block
+3. `access_shield_shape` (forward, priority +10) — rate limits
+4. `access_shield_subnet` (forward, priority +15) — subnet caps
+5. fw4 (forward, priority filter = 0) — zone policy
+6. dnsmasq (userspace) — DHCP server
+
+If an earlier layer already blocks traffic, later layers never see it. The
+toggles in `access_shield_fw` only matter when the layer above them (fw4
+or dnsmasq) is permissive.
+
+**Decision guide:**
+
+| Goal | dhcp_allow | default_drop | Requires |
+|---|---|---|---|
+| Strict isolation (recommended for cameras / IoT) | 1 | 1 | — |
+| Monitoring — log unknowns, don't hard-block | 1 | 0 | Zone forward != REJECT |
+| Zero DHCP to unknowns | 0 | 1 | — |
+| Whitelist as allow-only (permissive) | 0 | 0 | Zone forward != REJECT; devices need static leases |
+
 ---
 
 ## Compatibility with Other Systems

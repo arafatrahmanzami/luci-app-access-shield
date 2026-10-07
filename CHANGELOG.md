@@ -4,6 +4,42 @@ All notable changes to Access Shield are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r4] — 2026-10-07
+
+### Fixed
+
+**Interfaces tab — Save & Apply**
+- `handleSaveApply` now calls `ui.changes.apply()` — the commit step was
+  missing. Save & Apply previously staged changes in the browser, called
+  the sync RPC to reload services, showed a success notification, but
+  never wrote to UCI. The "unsaved changes" badge persisted after every
+  save.
+
+**Per-bridge enforcement toggles**
+- `dhcp_allow` — now read in `apply_interface()`. When `0`, the DHCP
+  accept rule (`udp dport 67`) is not emitted on that bridge's shield
+  chain. Devices on this bridge cannot reach dnsmasq to obtain a lease.
+- `default_drop` — now read in `apply_interface()`. When `0`, the final
+  `meta nfproto ipv4 drop` rule is not emitted. The chain's `policy
+  accept` takes over and non-whitelisted IPv4 continues to the forward
+  hook.
+- Both fields default to `1` when missing — preserves prior behavior for
+  existing configurations. Only bridges with an explicit `0` change
+  behavior.
+
+### Added
+
+**Layered enforcement documentation** — Help tab and README now describe
+how the two toggles combine with the firewall zone forward policy and
+dnsmasq's dynamic DHCP setting.
+
+### Notes
+
+Both toggles have been present in the UI since v1.0.0 but were never read
+by the init script. On routers where fw4's zone forward policy is REJECT
+(the OpenWrt default) and dnsmasq has `dynamicdhcp=0`, the observable
+effect is masked by those layers — see Help tab for the decision matrix.
+
 ## [1.0.0] — 2026-10-06
 
 ### Added

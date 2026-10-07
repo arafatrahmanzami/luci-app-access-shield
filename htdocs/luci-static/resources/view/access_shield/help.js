@@ -71,6 +71,13 @@ return view.extend({
                 { k: 'Blocks', v: 'Per-device internet denial, scoped by iifname (bridge). Same MAC on a different bridge stays unaffected.' }
             ]),
 
+            section('Interface Toggles — Layered Enforcement', [
+                { k: 'dhcp_allow', v: 'Controls whether devices on this bridge can reach dnsmasq to obtain an IP. When 0, the DHCP accept rule (UDP 67) is not added to the shield chain. Effect is only observable when dnsmasq has a dynamic range (dynamicdhcp=1) on this bridge — with dynamicdhcp=0, dnsmasq ignores unlisted MACs anyway, so the toggle is masked.' },
+                { k: 'default_drop', v: 'Controls whether the shield chain ends with a catch-all IPv4 drop. When 0, non-whitelisted IPv4 falls through to fw4 forward hook. Effect is only observable when the zone forward policy is not already REJECT/DROP.' },
+                { k: 'Why they sometimes appear to do nothing', v: 'Enforcement is layered: access_shield_fw (prerouting, priority -150) runs first, then access_shield_block (forward, +5), shape (+10), subnet (+15), then fw4 (forward, priority filter=0). If an earlier layer already blocks traffic, later layers never see it. On most OpenWrt routers, fw4 forward=REJECT provides what default_drop=1 does, and dynamicdhcp=0 provides what dhcp_allow=0 does. The toggles matter on permissive zones or bridges with dynamic DHCP.' },
+                { k: 'Decision guide', v: 'Strict (cameras/IoT): dhcp_allow=1 + default_drop=1. Monitoring: dhcp_allow=1 + default_drop=0 (needs zone forward != REJECT). Zero DHCP to unknowns: dhcp_allow=0 + default_drop=1. Loose whitelist-as-allow-only: 0 + 0 (needs permissive zone + static leases).' }
+            ]),
+
             section('Getting Started', [
                 step(1, E('span', {}, ['Open ', E('strong', {}, 'Setup'), ' and follow the wizard through Step 7.'])),
                 step(2, E('span', {}, ['Verify with ', E('strong', {}, 'Status'), ' — all 6 checks should be ✓.'])),
