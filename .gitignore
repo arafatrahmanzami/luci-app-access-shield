@@ -20,3 +20,4 @@ Thumbs.db
 *.ipk
 *.apk
 /bin/
+dist/
