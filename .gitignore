@@ -3,6 +3,7 @@
 *.tar.bz2
 *.zip
 *.bak
+*.bak-*
 *.snapshot
 *.pre-*
 *.before-*

@@ -175,16 +175,16 @@ The app has a built-in **admin safeguard** that auto-binds your current session,
 
     cd /tmp && \
     opkg update && \
-    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0/luci-app-access-shield_1.0.0-1_all.ipk && \
-    opkg install luci-app-access-shield_1.0.0-1_all.ipk && \
+    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r5/luci-app-access-shield_1.0.0-r5_all.ipk && \
+    opkg install luci-app-access-shield_1.0.0-r5_all.ipk && \
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* && \
     /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
 
 **OpenWrt ≥ 25.12 — apk:**
 
     cd /tmp && \
-    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0/luci-app-access-shield-1.0.0-r1.apk && \
-    apk add --allow-untrusted luci-app-access-shield-1.0.0-r1.apk && \
+    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r5/luci-app-access-shield-1.0.0-r5.apk && \
+    apk add --allow-untrusted luci-app-access-shield-1.0.0-r5.apk && \
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* && \
     /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
 
@@ -193,12 +193,12 @@ The app has a built-in **admin safeguard** that auto-binds your current session,
     cd /tmp && \
     if command -v apk >/dev/null 2>&1; then \
       echo "Detected apk — OpenWrt 25.12+" && \
-      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0/luci-app-access-shield-1.0.0-r1.apk && \
+      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r5/luci-app-access-shield-1.0.0-r5.apk && \
       apk add --allow-untrusted access-shield.pkg; \
     else \
       echo "Detected opkg — OpenWrt 24.10 or older" && \
       opkg update && \
-      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0/luci-app-access-shield_1.0.0-1_all.ipk && \
+      wget -O access-shield.pkg https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r5/luci-app-access-shield_1.0.0-r5_all.ipk && \
       opkg install access-shield.pkg; \
     fi && \
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* && \
@@ -211,27 +211,56 @@ Copy the `.ipk` / `.apk` to `/tmp` on the router via WinSCP / FileZilla / SCP, t
 **OpenWrt ≤ 24.10 (opkg):**
 
     cd /tmp
-    opkg install luci-app-access-shield_1.0.0-1_all.ipk
+    opkg install luci-app-access-shield_1.0.0-r5_all.ipk
     /etc/init.d/uhttpd restart
 
 **OpenWrt ≥ 25.12 (apk):**
 
     cd /tmp
-    apk --allow-untrusted add /tmp/luci-app-access-shield-1.0.0-r1.apk
+    apk --allow-untrusted add /tmp/luci-app-access-shield-1.0.0-r5.apk
     /etc/init.d/uhttpd restart
 
-### 4. Tarball install (from source tarball)
+### 4. Overlay tarball (manual file install)
+
+Use this method when `opkg` / `apk` is not available (offline router,
+custom firmware image) or when you prefer manual file placement. The
+overlay tarball is attached to the release and contains the final
+filesystem layout — `/etc/...`, `/usr/...`, `/www/...` — so extraction
+goes directly into `/`.
+
+**Important:** this method bypasses `opkg` / `apk`, so the package's
+`postinst` script does not run. The commands below replicate what
+`postinst` would have done — seed the config on first install, enable
+and start the services, clear the LuCI cache.
 
     # On PC
-    wget https://github.com/arafatrahmanzami/luci-app-access-shield/archive/refs/tags/v1.0.0.tar.gz
-    scp v1.0.0.tar.gz root@192.168.10.1:/tmp/
-
+    wget https://github.com/arafatrahmanzami/luci-app-access-shield/releases/download/v1.0.0-r5/luci-app-access-shield-1.0.0-r5-overlay.tar.gz
+    scp luci-app-access-shield-1.0.0-r5-overlay.tar.gz root@192.168.10.1:/tmp/
+    
     # On router
-    cd / && tar xzf /tmp/v1.0.0.tar.gz --strip-components=1
-    chmod +x /etc/init.d/access-shield* /usr/bin/access-shield-* /usr/libexec/rpcd/luci.access_shield
+    cd / && tar xzf /tmp/luci-app-access-shield-1.0.0-r5-overlay.tar.gz
+    
+    # Replicate postinst: seed config on first install only
+    [ -f /etc/config/access_shield ] || /etc/uci-defaults/99-access-shield
+    
+    # Enable + start the services
+    for s in access-shield access-shield-block access-shield-shape \
+             access-shield-stats access-shield-subnet access-shield-ticketd; do
+        /etc/init.d/$s enable
+        /etc/init.d/$s start
+    done
+    
+    # Clear LuCI cache so the menu and views are picked up
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache/*
     /etc/init.d/rpcd restart
     /etc/init.d/uhttpd restart
+
+**Uninstall (overlay install):** run the same steps as the
+`"Uninstall completely"` section below, but skip the `opkg remove` /
+`apk del` step. You will need to delete the files listed in the
+"What gets installed" table by hand if you want a full cleanup — an
+overlay install leaves no package-manager record for `opkg` / `apk`
+to remove.
 
 ---
 
@@ -780,7 +809,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full history.
     # Navigate: LuCI → Applications → luci-app-access-shield → <M>
     
     make package/luci-app-access-shield/compile V=s
-    # Output: bin/packages/<arch>/base/luci-app-access-shield_1.0.0-1_all.ipk
+    # Output: bin/packages/<arch>/base/luci-app-access-shield_1.0.0-r5_all.ipk
 
 **Short version (all in one):**
 
