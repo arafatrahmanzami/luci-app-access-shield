@@ -82,6 +82,20 @@ return view.extend({
         o = i.option(form.Value, 'scan_interval', _('Discovery refresh (seconds)'));
         o.datatype = 'uinteger';
 
+        o = i.option(form.Value, 'dashboard_interval', _('Dashboard refresh interval (seconds)'));
+        o.datatype = 'uinteger';
+        o.placeholder = '15';
+        o.description = _('How often the Dashboard auto-refreshes. Lower = more responsive ticket timer and device state; higher = less router load. 15 is the default. Set to 0 to disable auto-refresh entirely.');
+
+        // ── Firewall permission ──────────────────────────────────
+        var fw = m.section(form.NamedSection, 'settings', 'global', _('Firewall policy'));
+        fw.description = _('Access Shield never writes /etc/config/firewall unless you explicitly allow it here.');
+
+        o = fw.option(form.Flag, 'firewall_write', _('Allow Access Shield to write firewall rules'));
+        o.default = '0';
+        o.rmempty = false;
+        o.description = _('When OFF (recommended), the Setup wizard only verifies firewall rules and points you at Network → Firewall to fix them manually. When ON, the wizard\'s "Add missing rules" button will write the missing allow rules for DHCP/DNS/LuCI into /etc/config/firewall. A snapshot is taken first and restored if fw4 fails to reload.');
+
         // ── Admin safeguard log ──────────────────────────────────
         var a = m.section(form.NamedSection, 'settings', 'global', _('Admin safeguard log'));
         a.description = _('Auto-bound sessions are recorded here for audit.');

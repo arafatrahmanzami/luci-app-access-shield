@@ -4,6 +4,38 @@ All notable changes to Access Shield are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r9] — 2026-10-09
+
+### Fixed
+
+**Traffic tab — auto-refresh dropdown did nothing**
+- The dropdown's `change` handler updated a local variable that the
+  already-registered LuCI poll never re-read. Changing the interval had
+  no effect until the page was reloaded manually.
+- Replaced the LuCI `poll.add` registration with a module-scope
+  `setInterval` that is cleared and re-created whenever the dropdown
+  changes. Added a `view.unload` hook so navigating away clears the
+  timer. Added 30s and Off options.
+
+### Changed
+
+**Traffic tab — Per-Subnet limits now have one Save All button**
+- Removed the per-row Save button. A single **Save All Changes** button
+  below the table commits every row in one pass — change multiple
+  bridges, click once, one page reload. Previously each row required
+  its own Save click and page reload.
+
+### Added
+
+**Settings tab — new global options**
+- `dashboard_interval` — Dashboard auto-refresh interval in seconds
+  (default 15, `0` disables).
+- `firewall_write` — permission flag (default OFF). When off, the
+  Setup wizard only verifies firewall rules and points you at
+  Network → Firewall. When on, the wizard's “Add missing rules”
+  button (added in a follow-up commit) will write the missing
+  allow rules into `/etc/config/firewall` with rollback on failure.
+
 ## [1.0.0-r8] — 2026-10-09
 
 ### Fixed

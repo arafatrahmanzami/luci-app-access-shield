@@ -5,6 +5,12 @@
 'require rpc';
 'require poll';
 
+// Module-scope traffic poll timer; survives re-renders, cleared on unload.
+var trafficPollTimer = null;
+function stopTrafficPoll() {
+    if (trafficPollTimer) { clearInterval(trafficPollTimer); trafficPollTimer = null; }
+}
+
 var callListDevices = rpc.declare({ object: 'luci.access_shield', method: 'list_devices' });
 var callTraffic     = rpc.declare({ object: 'luci.access_shield', method: 'traffic_stats' });
 var callGetLimits   = rpc.declare({ object: 'luci.access_shield', method: 'get_speed_limits' });
@@ -104,6 +110,8 @@ return view.extend({
             return E('table', { 'class': 'table' }, rows);
         }
 
+        var subnetRows = [];
+
         function buildSubnetSection() {
             if (!subnets.length) return null;
 
@@ -112,8 +120,7 @@ return view.extend({
                     E('th', { 'class': 'th' }, _('Bridge')),
                     E('th', { 'class': 'th' }, _('Subnet')),
                     E('th', { 'class': 'th' }, _('Download Limit')),
-                    E('th', { 'class': 'th' }, _('Upload Limit')),
-                    E('th', { 'class': 'th' }, '')
+                    E('th', { 'class': 'th' }, _('Upload Limit'))
                 ])
             ];
 
@@ -133,30 +140,39 @@ return view.extend({
                         return E('option', { 'value': u, 'selected': (s.ul_unit === u) ? true : null }, u);
                     }));
 
+                subnetRows.push({ cidr: s.cidr, bridge: s.bridge, dlv: dlv, dlu: dlu, ulv: ulv, ulu: ulu });
+
                 rows.push(E('tr', { 'class': 'tr' }, [
                     E('td', { 'class': 'td' }, s.bridge),
                     E('td', { 'class': 'td' }, E('code', {}, s.cidr)),
                     E('td', { 'class': 'td' }, [ dlv, dlu ]),
-                    E('td', { 'class': 'td' }, [ ulv, ulu ]),
-                    E('td', { 'class': 'td' }, [
-                        E('button', {
-                            'class': 'btn cbi-button-action',
-                            'style': 'font-size:11px;padding:3px 8px',
-                            'click': ui.createHandlerFn(this, function() {
-                                return callSetSubnetLimit(s.cidr, s.bridge, s.bridge, dlv.value, dlu.value, ulv.value, ulu.value)
-                                    .then(function() {
-                                        ui.addNotification(null, E('p', {}, _('Subnet limit saved.')), 'info');
-                                        return new Promise(function(r) { setTimeout(r, 800); });
-                                    }).then(function() { window.location.reload(); });
-                            })
-                        }, _('Save'))
-                    ])
+                    E('td', { 'class': 'td' }, [ ulv, ulu ])
                 ]));
             });
 
+            var saveAllBtn = E('button', {
+                'class': 'btn cbi-button-action',
+                'style': 'margin-top:10px',
+                'click': ui.createHandlerFn(this, function() {
+                    var promises = subnetRows.map(function(r) {
+                        return callSetSubnetLimit(r.cidr, r.bridge, r.bridge, r.dlv.value, r.dlu.value, r.ulv.value, r.ulu.value);
+                    });
+                    return Promise.all(promises).then(function() {
+                        ui.addNotification(null, E('p', {}, _('All subnet limits saved.')), 'info');
+                        return new Promise(function(r) { setTimeout(r, 800); });
+                    }).then(function() { window.location.reload(); })
+                      .catch(function(err) {
+                          ui.addNotification(null, E('p', {}, _('Save failed: ') + (err && err.message ? err.message : err)), 'error');
+                      });
+                })
+            }, _('Save All Changes'));
+
             return E('div', { 'class': 'cbi-section' }, [
                 E('h3', {}, _('Per-Subnet Bandwidth Limits')),
-                E('table', { 'class': 'table' }, rows)
+                E('p', { 'style': 'font-size:12px;color:#888' },
+                    _('Change one or more rows, then click Save All Changes to commit them in one pass.')),
+                E('table', { 'class': 'table' }, rows),
+                saveAllBtn
             ]);
         }
 
@@ -189,12 +205,21 @@ return view.extend({
                 (function() {
                     var sel = E('select', {
                         'style': 'padding:4px',
-                        'change': function(ev) { pollInterval = parseInt(ev.target.value, 10); }
+                        'change': function(ev) {
+                            pollInterval = parseInt(ev.target.value, 10);
+                            if (isNaN(pollInterval)) pollInterval = 2;
+                            stopTrafficPoll();
+                            if (pollInterval > 0) {
+                                trafficPollTimer = setInterval(function() { refresh(); }, pollInterval * 1000);
+                            }
+                        }
                     }, [
                         E('option', { 'value': '1', 'selected': pollInterval === 1 ? true : null }, '1 s'),
                         E('option', { 'value': '2', 'selected': pollInterval === 2 ? true : null }, '2 s'),
                         E('option', { 'value': '5', 'selected': pollInterval === 5 ? true : null }, '5 s'),
-                        E('option', { 'value': '10', 'selected': pollInterval === 10 ? true : null }, '10 s')
+                        E('option', { 'value': '10', 'selected': pollInterval === 10 ? true : null }, '10 s'),
+                        E('option', { 'value': '30', 'selected': pollInterval === 30 ? true : null }, '30 s'),
+                        E('option', { 'value': '0',  'selected': pollInterval === 0  ? true : null }, _('Off'))
                     ]);
                     return sel;
                 })()
@@ -213,7 +238,9 @@ return view.extend({
         container.appendChild(liveContainer);
         if (configSection) container.appendChild(configSection);
 
-        poll.add(function() { return refresh(); }, pollInterval);
+        if (pollInterval > 0) {
+            trafficPollTimer = setInterval(function() { refresh(); }, pollInterval * 1000);
+        }
 
         return E('div', {}, [
             E('h2', {}, _('Access Shield')),
@@ -225,5 +252,9 @@ return view.extend({
 
     handleSave: null,
     handleSaveApply: null,
-    handleReset: null
+    handleReset: null,
+
+    unload: function() {
+        stopTrafficPoll();
+    }
 });
