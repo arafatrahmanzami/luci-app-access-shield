@@ -6,6 +6,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.0-r9] — 2026-10-09
 
+### Added
+
+**Dashboard — configurable auto-refresh**
+- Read `access_shield.settings.dashboard_interval` (default 15s, 0 = off).
+- Live override dropdown on the Dashboard (`Refresh: [dropdown]`)
+  changes the interval immediately without saving; a page reload picks
+  up the Settings value again.
+- Replaced LuCI `poll.add` with a module-scope `setInterval` that is
+  cleared via `view.unload`. Added 5/10/15/30/60/120s and Off options.
+
+**Wireless tab — per-SSID MAC detail modal**
+- Click an SSID name in the per-SSID filtering status table to open a
+  modal listing every MAC currently allowed on that SSID with a
+  per-MAC Remove button and an Add MAC input. Uses the existing
+  `set_mac_filter` RPC (add/remove) — no rpcd changes.
+
+## [1.0.0-r9] — 2026-10-09
+
 ### Fixed
 
 **Traffic tab — auto-refresh dropdown did nothing**

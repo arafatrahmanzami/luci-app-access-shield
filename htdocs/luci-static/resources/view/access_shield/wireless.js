@@ -78,6 +78,89 @@ return view.extend({
             ifaceContainer.appendChild(fieldset);
         });
 
+        // ── SSID detail modal (full MAC list + add/remove) ───────
+        function openSsidModal(iface) {
+            var macs = (iface.maclist || []).slice();
+            var macListContainer = E('div');
+
+            function renderMacList() {
+                while (macListContainer.firstChild) macListContainer.removeChild(macListContainer.firstChild);
+                if (macs.length === 0) {
+                    macListContainer.appendChild(E('p', { 'style': 'color:#888;font-style:italic;padding:8px 0' },
+                        _('No MACs allowed on this SSID yet.')));
+                    return;
+                }
+                var rows = [
+                    E('tr', { 'class': 'tr table-titles' }, [
+                        E('th', { 'class': 'th' }, _('MAC')),
+                        E('th', { 'class': 'th' }, _('Action'))
+                    ])
+                ];
+                macs.forEach(function(m) {
+                    rows.push(E('tr', { 'class': 'tr' }, [
+                        E('td', { 'class': 'td', 'style': 'font-family:monospace;font-size:12px' }, m),
+                        E('td', { 'class': 'td' }, [
+                            E('button', {
+                                'class': 'btn cbi-button-negative',
+                                'style': 'font-size:11px;padding:3px 8px',
+                                'click': function() {
+                                    callSetMacFilter(iface.section, m, 'remove').then(function() {
+                                        macs = macs.filter(function(x) { return x !== m; });
+                                        renderMacList();
+                                        ui.addNotification(null, E('p', {}, _('Removed %s.').format(m)), 'info');
+                                    });
+                                }
+                            }, _('Remove'))
+                        ])
+                    ]));
+                });
+                macListContainer.appendChild(E('table', { 'class': 'table' }, rows));
+            }
+
+            var addInput = E('input', {
+                'type': 'text',
+                'placeholder': 'AA:BB:CC:DD:EE:FF',
+                'style': 'width:200px;padding:5px;font-family:monospace',
+                'maxlength': '17'
+            });
+            var addBtn = E('button', {
+                'class': 'btn cbi-button-action',
+                'click': function() {
+                    var v = (addInput.value || '').trim().toUpperCase();
+                    if (!/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(v)) {
+                        ui.addNotification(null, E('p', {}, _('Enter a valid MAC address.')), 'warning');
+                        return;
+                    }
+                    if (macs.indexOf(v) > -1) {
+                        ui.addNotification(null, E('p', {}, _('Already in the list.')), 'info');
+                        return;
+                    }
+                    callSetMacFilter(iface.section, v, 'add').then(function() {
+                        macs.push(v);
+                        addInput.value = '';
+                        renderMacList();
+                        ui.addNotification(null, E('p', {}, _('Added %s.').format(v)), 'info');
+                    });
+                }
+            }, _('Add'));
+
+            renderMacList();
+
+            ui.showModal(_('MAC filter: ') + (iface.ssid || iface.section), [
+                E('p', { 'style': 'font-size:12px;color:#888' },
+                    _('Full list of MACs allowed on this SSID. Changes apply immediately via hostapd.') + ' ' +
+                    _('Filter state: ') + (iface.macfilter || 'disable')),
+                macListContainer,
+                E('div', { 'class': 'cbi-value', 'style': 'margin-top:1em' }, [
+                    E('label', { 'class': 'cbi-value-title' }, _('Add MAC')),
+                    E('div', { 'class': 'cbi-value-field' }, [ addInput, ' ', addBtn ])
+                ]),
+                E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+                    E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+                ])
+            ]);
+        }
+
         // ── Per-SSID summary table ────────────────────────────────
         var summaryRows = [
             E('tr', { 'class': 'tr table-titles' }, [
@@ -110,7 +193,13 @@ return view.extend({
 
             summaryRows.push(E('tr', { 'class': 'tr' }, [
                 E('td', { 'class': 'td' }, [ E('code', {}, i.device || '\u2014') ]),
-                E('td', { 'class': 'td' }, [ i.ssid || i.section || '\u2014' ]),
+                E('td', { 'class': 'td' }, [
+                    E('a', {
+                        'href': '#',
+                        'style': 'cursor:pointer;color:#4a9eff;text-decoration:underline',
+                        'click': function(ev) { ev.preventDefault(); openSsidModal(i); }
+                    }, i.ssid || i.section || '\u2014')
+                ]),
                 E('td', { 'class': 'td' }, [ filterBadge ]),
                 E('td', { 'class': 'td' }, [ macsDisplay ])
             ]));

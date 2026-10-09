@@ -4,6 +4,12 @@
 'require ui';
 'require rpc';
 'require poll';
+
+// Module-scope dashboard poll timer; cleared on unload.
+var dashboardPollTimer = null;
+function stopDashboardPoll() {
+    if (dashboardPollTimer) { clearInterval(dashboardPollTimer); dashboardPollTimer = null; }
+}
 'require dom';
 
 function ensureArray(data, key) {
@@ -78,6 +84,37 @@ return view.extend({
         var aliasesCache = [];
         var ticketsCache = {};
         var bindingByMac = {};
+
+        // Configured poll interval (UCI setting, default 15s, 0 = off)
+        var configuredInterval = parseInt(uci.get('access_shield', 'settings', 'dashboard_interval'), 10);
+        if (isNaN(configuredInterval) || configuredInterval < 0) configuredInterval = 15;
+
+        // Live override dropdown
+        var refreshSel = E('select', {
+            'style': 'padding:4px;margin-left:6px',
+            'change': function(ev) {
+                var v = parseInt(ev.target.value, 10);
+                stopDashboardPoll();
+                if (v > 0) {
+                    dashboardPollTimer = setInterval(function() { refresh(); }, v * 1000);
+                }
+            }
+        }, [
+            E('option', { 'value': '5',   'selected': configuredInterval === 5   ? true : null }, '5 s'),
+            E('option', { 'value': '10',  'selected': configuredInterval === 10  ? true : null }, '10 s'),
+            E('option', { 'value': '15',  'selected': configuredInterval === 15  ? true : null }, '15 s'),
+            E('option', { 'value': '30',  'selected': configuredInterval === 30  ? true : null }, '30 s'),
+            E('option', { 'value': '60',  'selected': configuredInterval === 60  ? true : null }, '60 s'),
+            E('option', { 'value': '120', 'selected': configuredInterval === 120 ? true : null }, '120 s'),
+            E('option', { 'value': '0',   'selected': configuredInterval === 0   ? true : null }, _('Off'))
+        ]);
+
+        var refreshRow = E('div', { 'style': 'font-size:12px;margin-bottom:8px;color:#aaa' }, [
+            _('Auto-refresh:'), ' ', refreshSel,
+            ' ',
+            E('span', { 'style': 'color:#888' },
+                _('(Default from Settings; changes here apply immediately but are not saved.)'))
+        ]);
         bindingList.forEach(function(b) {
             bindingByMac[(b.mac || '').toLowerCase()] = b;
         });
@@ -787,17 +824,23 @@ function openBindModal(d) {
 
         repaint();
 
-        poll.add(function() { return refresh(); }, 15);
+        if (configuredInterval > 0) {
+            dashboardPollTimer = setInterval(function() { refresh(); }, configuredInterval * 1000);
+        }
 
         return E('div', {}, [
             E('h2', {}, _('Access Shield')),
             E('p', { 'style': 'opacity:0.85;font-size:0.95em;margin-top:-4px;margin-bottom:16px' }, _('Device Access Control & Traffic Monitor')),
-            
+            refreshRow,
             container
         ]);
     },
 
     handleSave: null,
     handleSaveApply: null,
-    handleReset: null
+    handleReset: null,
+
+    unload: function() {
+        stopDashboardPoll();
+    }
 });
