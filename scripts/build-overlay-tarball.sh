@@ -3,7 +3,7 @@
 # Assembles a rootfs-overlay tarball from the clean r5 ipk.
 # Extracts the ipk payload into a staging tree with the exact
 # OpenWrt target layout, then tars as
-#   dist/luci-app-access-shield-1.0.0-r7-overlay.tar.gz
+#   dist/luci-app-access-shield-1.0.0-r8-overlay.tar.gz
 #
 # Ownership in the archive is forced to root:root via tar's
 # --owner/--group flags, so no chown (and no sudo) is required.
@@ -13,7 +13,7 @@
 set -e
 
 REPO="$HOME/projects/luci-app-access-shield"
-IPK="$HOME/sdk-access-shield/sdk/bin/packages/x86_64/base/luci-app-access-shield_1.0.0-r7_all.ipk"
+IPK="$HOME/sdk-access-shield/sdk/bin/packages/x86_64/base/luci-app-access-shield_1.0.0-r8_all.ipk"
 WORK="$(mktemp -d /tmp/as-overlay.XXXXXX)"
 STAGE="$WORK/root"
 OUT="$REPO/dist"
@@ -50,7 +50,7 @@ find "$STAGE/www"              -type f -exec chmod 0644 {} \;
 find "$STAGE/usr/share"        -type f -exec chmod 0644 {} \;
 
 echo "[4/5] Creating tarball (ownership forced to root:root)..."
-TARBALL="$OUT/luci-app-access-shield-1.0.0-r7-overlay.tar.gz"
+TARBALL="$OUT/luci-app-access-shield-1.0.0-r8-overlay.tar.gz"
 cd "$STAGE"
 tar czf "$TARBALL" --owner=0 --group=0 --numeric-owner .
 cd "$WORK"
