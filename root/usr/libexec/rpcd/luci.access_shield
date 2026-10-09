@@ -194,16 +194,40 @@ do_bandwidth_stats() {
 }
 
 do_list_devices() {
-    # Calls the standalone discover script and passes through JSON
+    # Runs access-shield-discover with a short-lived TTL cache.
+    # The discover script spawns dozens of subprocesses per call (awk,
+    # grep, iw, ip, uci) and takes 4+ seconds on a 25-device router.
+    # Cache TTL = access_shield.settings.scan_interval (default 30s).
+    local cache="/tmp/access_shield_discover_cache.json"
+    local ts="/tmp/access_shield_discover_cache.ts"
+    local interval now mtime age out
+
+    interval=$(uci -q get access_shield.settings.scan_interval)
+    case "$interval" in ''|*[!0-9]*) interval=30 ;; esac
+
+    if [ -f "$cache" ] && [ -f "$ts" ]; then
+        now=$(date +%s)
+        mtime=$(cat "$ts" 2>/dev/null)
+        case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+        age=$((now - mtime))
+        if [ "$age" -ge 0 ] && [ "$age" -lt "$interval" ]; then
+            cat "$cache"
+            return
+        fi
+    fi
+
     out=$(/usr/bin/access-shield-discover 2>/dev/null)
     if [ -z "$out" ]; then
         json_init
         json_add_array "devices"
         json_close_array
-        json_dump
+        json_dump > "$cache"
+        date +%s > "$ts"
+        cat "$cache"
         return
     fi
-    # The discover script outputs raw JSON — dump it directly
+    printf '%s\n' "$out" > "$cache"
+    date +%s > "$ts"
     printf '%s\n' "$out"
 }
 

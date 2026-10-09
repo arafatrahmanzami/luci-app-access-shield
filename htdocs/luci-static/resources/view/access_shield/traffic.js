@@ -71,7 +71,15 @@ return view.extend({
         var traffic = data[2] || {};
         var limits  = unwrap(data[3], 'limits');
         var subnets = unwrap(data[4], 'subnets');
-        var pollInterval = 2;
+
+        // Configured poll interval (UCI setting, default 2s, 0 = off)
+        var pollInterval = parseInt(uci.get('access_shield', 'settings', 'traffic_interval'), 10);
+        if (isNaN(pollInterval) || pollInterval < 0) pollInterval = 2;
+
+        // Dropdown options: include configured default if it isn't in our list
+        var pollChoices = [0, 1, 2, 5, 10, 30, 60];
+        if (pollChoices.indexOf(pollInterval) < 0) pollChoices.push(pollInterval);
+        pollChoices.sort(function(a, b) { return a - b; });
 
         function lookupRate(mac) {
             var target = normMac(mac);
@@ -227,14 +235,10 @@ return view.extend({
                             trafficPollInterval = v;
                             scheduleTrafficRefresh();
                         }
-                    }, [
-                        E('option', { 'value': '1', 'selected': pollInterval === 1 ? true : null }, '1 s'),
-                        E('option', { 'value': '2', 'selected': pollInterval === 2 ? true : null }, '2 s'),
-                        E('option', { 'value': '5', 'selected': pollInterval === 5 ? true : null }, '5 s'),
-                        E('option', { 'value': '10', 'selected': pollInterval === 10 ? true : null }, '10 s'),
-                        E('option', { 'value': '30', 'selected': pollInterval === 30 ? true : null }, '30 s'),
-                        E('option', { 'value': '0',  'selected': pollInterval === 0  ? true : null }, _('Off'))
-                    ]);
+                    }, pollChoices.map(function(v) {
+                        var label = (v === 0) ? _('Off') : (v + ' s');
+                        return E('option', { 'value': String(v), 'selected': pollInterval === v ? true : null }, label);
+                    }));
                     return sel;
                 })()
             ]),

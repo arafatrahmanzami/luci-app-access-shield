@@ -8,61 +8,73 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-**Traffic tab — auto-refresh dropdown did nothing**
+**Dashboard & Traffic — poll stacking caused XHR timeouts and CPU spikes**
+- Initial r9a/r9b patches replaced LuCI's `poll.add` with `setInterval`,
+  which schedules independently of completion. On a busy router the
+  refresh call (which spawns subprocesses + multiple `uci get` calls)
+  took longer than the interval, so every tick stacked on top of the
+  previous one and saturated rpcd. Dashboard became unusable.
+- Replaced both with a sequential `setTimeout` scheduler: each tick
+  waits for `refresh()` to resolve before scheduling the next. This is
+  what LuCI's `poll.add` did implicitly; `setInterval` does not.
+- Both views also added a `view.unload` hook to clear the timer on
+  navigation.
+
+**Traffic — auto-refresh dropdown did nothing**
 - The dropdown's `change` handler updated a local variable that the
-  already-registered LuCI poll never re-read. Changing the interval had
-  no effect until the page was reloaded manually.
-- Replaced the LuCI `poll.add` registration with a module-scope
-  `setInterval` that is cleared and re-created whenever the dropdown
-  changes. Added a `view.unload` hook so navigating away clears the
-  timer. Added 30s and Off options.
+  already-registered LuCI poll never re-read. Replaced with a
+  scheduler that clears and re-creates on change.
+
+**`list_devices` — 4+ second RPC stall**
+- `do_list_devices` called `/usr/bin/access-shield-discover` on every
+  invocation. That script forks awk / grep / iw / ip / uci per device —
+  ~4.3 seconds on a 25-device router — and blocked the entire Dashboard
+  `Promise.all`. Added a `/tmp` TTL cache; TTL = existing `scan_interval`
+  setting (default 30s). Repeat calls are a plain `cat`: ~0.05s.
 
 ### Changed
 
-**Traffic tab — Per-Subnet limits now have one Save All button**
+**Traffic — Per-Subnet limits now have one Save All button**
 - Removed the per-row Save button. A single **Save All Changes** button
   below the table commits every row in one pass — change multiple
-  bridges, click once, one page reload. Previously each row required
-  its own Save click and page reload.
+  bridges, click once, one page reload.
+- Traffic's "Sample: N s" label relabeled to "Backend sample: N s" to
+  clarify it is the conntrack sampling rate, not the poll interval.
 
 ### Added
 
-**Settings tab — new global options**
-- `dashboard_interval` — Dashboard auto-refresh interval in seconds
-  (default 15, `0` disables).
-- `firewall_write` — permission flag (default OFF). When off, the
-  Setup wizard only verifies firewall rules and points you at
-  Network → Firewall. When on, the wizard's "Add missing rules"
-  button writes the missing allow rules into `/etc/config/firewall`
-  with rollback on failure.
+**Settings — three new global options**
+- `dashboard_interval` — Dashboard auto-refresh interval (default 15,
+  0 disables).
+- `traffic_interval` — Traffic auto-refresh interval (default 2,
+  0 disables).
+- `firewall_write` — permission flag (default OFF).
 
 **Dashboard — configurable auto-refresh**
-- Read `access_shield.settings.dashboard_interval` (default 15s, 0 = off).
-- Live override dropdown on the Dashboard (`Refresh: [dropdown]`)
-  changes the interval immediately without saving; a page reload picks
-  up the Settings value again.
-- Replaced LuCI `poll.add` with a module-scope `setInterval` that is
-  cleared via `view.unload`. Added 5/10/15/30/60/120s and Off options.
+- Live override dropdown in the header. Reads the Settings default on
+  load; changes take effect immediately without saving.
+- Options: 5/10/15/30/60/120s and Off.
 
-**Wireless tab — per-SSID MAC detail modal**
+**Traffic — configurable auto-refresh**
+- Live override dropdown in the header. Reads the Settings default on
+  load.
+- Options: 0/1/2/5/10/30/60s plus the configured value.
+
+**Wireless — per-SSID MAC detail modal**
 - Click an SSID name in the per-SSID filtering status table to open a
-  modal listing every MAC currently allowed on that SSID with a
-  per-MAC Remove button and an Add MAC input. Uses the existing
-  `set_mac_filter` RPC (add/remove) — no rpcd changes.
+  modal listing every MAC currently allowed on that SSID, with per-MAC
+  Remove and an Add MAC input. Uses existing `set_mac_filter` RPC.
 
 **Setup wizard — optional firewall write (default OFF)**
-- New `access_shield.settings.firewall_write` flag, default `0`.
+- New `firewall_write` flag, default `0`.
 - When OFF: the Setup wizard's step-4 button becomes "How to fix
-  manually" and opens a modal with step-by-step instructions for
-  Network -> Firewall. The app's promise to never touch
-  `/etc/config/firewall` is preserved.
-- When ON: the button keeps its old label and calls a new
-  `ensure_zone_rules` rpcd case that writes the missing allow rules
-  into `/etc/config/firewall`, snapshots the config first, reloads
-  fw4, and restores the snapshot if fw4 fails to come up.
-- Closes the investigation into the previously-dead
-  `ensure_zone_rules` button — the rpcd case it referenced never
-  existed.
+  manually" and opens a modal with instructions for Network -> Firewall.
+  The app's promise to never touch `/etc/config/firewall` is preserved.
+- When ON: the button writes the missing allow rules into
+  `/etc/config/firewall`, snapshots the config first, reloads fw4, and
+  restores the snapshot if fw4 fails to come up.
+- Closes the investigation into the previously-dead `ensure_zone_rules`
+  button — the rpcd case it referenced never existed.
 
 
 ## [1.0.0-r8] — 2026-10-09

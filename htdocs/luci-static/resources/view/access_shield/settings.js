@@ -87,6 +87,11 @@ return view.extend({
         o.placeholder = '15';
         o.description = _('How often the Dashboard auto-refreshes. Lower = more responsive ticket timer and device state; higher = less router load. 15 is the default. Set to 0 to disable auto-refresh entirely.');
 
+        o = i.option(form.Value, 'traffic_interval', _('Traffic refresh interval (seconds)'));
+        o.datatype = 'uinteger';
+        o.placeholder = '2';
+        o.description = _('How often the Traffic tab auto-refreshes. This is the poll interval; the "Backend sample" value on the Traffic page is a separate, server-side conntrack sample rate. 2 is the default. Set to 0 to disable auto-refresh entirely.');
+
         // ── Firewall permission ──────────────────────────────────
         var fw = m.section(form.NamedSection, 'settings', 'global', _('Firewall policy'));
         fw.description = _('Access Shield never writes /etc/config/firewall unless you explicitly allow it here.');
