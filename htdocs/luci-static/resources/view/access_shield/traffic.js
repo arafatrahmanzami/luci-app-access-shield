@@ -5,10 +5,26 @@
 'require rpc';
 'require poll';
 
-// Module-scope traffic poll timer; survives re-renders, cleared on unload.
+// Module-scope traffic poll scheduler (sequential, no stacking).
 var trafficPollTimer = null;
+var trafficPollInterval = 2;
+var trafficRefreshFn = null;
 function stopTrafficPoll() {
-    if (trafficPollTimer) { clearInterval(trafficPollTimer); trafficPollTimer = null; }
+    if (trafficPollTimer) { clearTimeout(trafficPollTimer); trafficPollTimer = null; }
+}
+function scheduleTrafficRefresh() {
+    stopTrafficPoll();
+    if (trafficPollInterval <= 0 || !trafficRefreshFn) return;
+    var tick = function() {
+        if (trafficPollInterval <= 0) return;
+        var done = function() {
+            if (trafficPollInterval > 0) {
+                trafficPollTimer = setTimeout(tick, trafficPollInterval * 1000);
+            }
+        };
+        trafficRefreshFn().then(done, done);
+    };
+    trafficPollTimer = setTimeout(tick, trafficPollInterval * 1000);
 }
 
 var callListDevices = rpc.declare({ object: 'luci.access_shield', method: 'list_devices' });
@@ -206,12 +222,10 @@ return view.extend({
                     var sel = E('select', {
                         'style': 'padding:4px',
                         'change': function(ev) {
-                            pollInterval = parseInt(ev.target.value, 10);
-                            if (isNaN(pollInterval)) pollInterval = 2;
-                            stopTrafficPoll();
-                            if (pollInterval > 0) {
-                                trafficPollTimer = setInterval(function() { refresh(); }, pollInterval * 1000);
-                            }
+                            var v = parseInt(ev.target.value, 10);
+                            if (isNaN(v) || v < 0) v = 2;
+                            trafficPollInterval = v;
+                            scheduleTrafficRefresh();
                         }
                     }, [
                         E('option', { 'value': '1', 'selected': pollInterval === 1 ? true : null }, '1 s'),
@@ -225,7 +239,7 @@ return view.extend({
                 })()
             ]),
             E('span', { 'style': 'font-size:12px;color:#888' },
-                _('Sample: ') + (traffic.interval || 1) + _(' s'))
+                _('Backend sample: ') + (traffic.interval || 1) + _(' s'))
         ]);
 
         // Static config section — built once, preserved across polls
@@ -238,9 +252,9 @@ return view.extend({
         container.appendChild(liveContainer);
         if (configSection) container.appendChild(configSection);
 
-        if (pollInterval > 0) {
-            trafficPollTimer = setInterval(function() { refresh(); }, pollInterval * 1000);
-        }
+        trafficPollInterval = pollInterval;
+        trafficRefreshFn = refresh;
+        scheduleTrafficRefresh();
 
         return E('div', {}, [
             E('h2', {}, _('Access Shield')),
@@ -255,6 +269,7 @@ return view.extend({
     handleReset: null,
 
     unload: function() {
+        trafficPollInterval = 0;
         stopTrafficPoll();
     }
 });

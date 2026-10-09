@@ -5,10 +5,29 @@
 'require rpc';
 'require poll';
 
-// Module-scope dashboard poll timer; cleared on unload.
+// Module-scope dashboard poll scheduler.
+// Sequential: waits for refresh() to resolve before scheduling the next
+// tick, so slow RPC calls never stack up (LuCI's poll.add has the same
+// property; setInterval does not).
 var dashboardPollTimer = null;
+var dashboardPollInterval = 15;
+var dashboardRefreshFn = null;
 function stopDashboardPoll() {
-    if (dashboardPollTimer) { clearInterval(dashboardPollTimer); dashboardPollTimer = null; }
+    if (dashboardPollTimer) { clearTimeout(dashboardPollTimer); dashboardPollTimer = null; }
+}
+function scheduleDashboardRefresh() {
+    stopDashboardPoll();
+    if (dashboardPollInterval <= 0 || !dashboardRefreshFn) return;
+    var tick = function() {
+        if (dashboardPollInterval <= 0) return;
+        var done = function() {
+            if (dashboardPollInterval > 0) {
+                dashboardPollTimer = setTimeout(tick, dashboardPollInterval * 1000);
+            }
+        };
+        dashboardRefreshFn().then(done, done);
+    };
+    dashboardPollTimer = setTimeout(tick, dashboardPollInterval * 1000);
 }
 'require dom';
 
@@ -94,10 +113,9 @@ return view.extend({
             'style': 'padding:4px;margin-left:6px',
             'change': function(ev) {
                 var v = parseInt(ev.target.value, 10);
-                stopDashboardPoll();
-                if (v > 0) {
-                    dashboardPollTimer = setInterval(function() { refresh(); }, v * 1000);
-                }
+                if (isNaN(v) || v < 0) v = 15;
+                dashboardPollInterval = v;
+                scheduleDashboardRefresh();
             }
         }, [
             E('option', { 'value': '5',   'selected': configuredInterval === 5   ? true : null }, '5 s'),
@@ -824,9 +842,9 @@ function openBindModal(d) {
 
         repaint();
 
-        if (configuredInterval > 0) {
-            dashboardPollTimer = setInterval(function() { refresh(); }, configuredInterval * 1000);
-        }
+        dashboardPollInterval = configuredInterval;
+        dashboardRefreshFn = refresh;
+        scheduleDashboardRefresh();
 
         return E('div', {}, [
             E('h2', {}, _('Access Shield')),
@@ -841,6 +859,7 @@ function openBindModal(d) {
     handleReset: null,
 
     unload: function() {
+        dashboardPollInterval = 0;
         stopDashboardPoll();
     }
 });
