@@ -204,6 +204,12 @@ do_list_devices() {
 
     interval=$(uci -q get access_shield.settings.scan_interval)
     case "$interval" in ''|*[!0-9]*) interval=30 ;; esac
+    # Double the cache TTL relative to scan_interval so a polling client
+    # (Dashboard at scan_interval cadence) always hits a warm cache
+    # instead of racing the expiry. Prevents a fresh discover subprocess
+    # burst on every poll cycle.
+    interval=$(( interval * 2 ))
+    [ "$interval" -lt 45 ] && interval=45
 
     if [ -f "$cache" ] && [ -f "$ts" ]; then
         now=$(date +%s)

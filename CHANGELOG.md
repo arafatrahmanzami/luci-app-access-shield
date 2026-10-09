@@ -29,8 +29,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `do_list_devices` called `/usr/bin/access-shield-discover` on every
   invocation. That script forks awk / grep / iw / ip / uci per device —
   ~4.3 seconds on a 25-device router — and blocked the entire Dashboard
-  `Promise.all`. Added a `/tmp` TTL cache; TTL = existing `scan_interval`
-  setting (default 30s). Repeat calls are a plain `cat`: ~0.05s.
+  `Promise.all`. Added a `/tmp` TTL cache; TTL = `2 × scan_interval`
+  with a 45s floor (so with the default `scan_interval=30`, TTL is 60s).
+  Doubling ensures a client polling at the `scan_interval` cadence
+  always hits a warm cache instead of racing its expiry on every
+  cycle — the difference between one discover burst per minute and
+  one per 30 seconds. Repeat calls within the window are a plain `cat`:
+  ~0.03s.
 
 ### Changed
 
