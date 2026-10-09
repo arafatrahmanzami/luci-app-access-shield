@@ -4,6 +4,40 @@ All notable changes to Access Shield are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r8] — 2026-10-09
+
+### Fixed
+
+**Settings tab — Save & Apply**
+- `handleSaveApply` was missing `ui.changes.apply()`. Clicking Save &
+  Apply staged the changes in the browser but never committed to UCI,
+  so the "UNSAVED CHANGES" badge persisted and the only way to commit
+  was to open the diff panel and click Save & Apply a second time.
+  Same class of bug as the r4 Interfaces-tab fix, in a view that
+  hadn't been checked at the time.
+
+**Traffic tab — Per-Subnet Bandwidth Limits input vanished**
+- The 2-second poll calls `repaint()`, which wiped the entire page
+  container and rebuilt it, including the subnet limit inputs. The
+  rebuilt inputs read from the last RPC response, not from what the
+  user had typed — so any character entered was lost within 1–2
+  seconds.
+- Fix: split the render into a `liveContainer` (device table, rebuilt
+  every poll) and static content (top bar + subnet config section,
+  built once and never touched by the poll). User typing in the
+  subnet inputs now survives, and the Save button still triggers a
+  page reload after the RPC commits.
+
+### Added
+
+**Wireless tab — per-SSID filtering status table**
+- New "Per-SSID filtering status" summary table above the checkbox
+  list. Shows for each AP-mode SSID: radio, SSID name, whether hostapd
+  MAC filter is `allow` or `disable`, and the current MAC list (up to
+  3 shown, `+N more` suffix beyond that).
+- The data was already returned by the `wifi_interfaces` RPC; the view
+  simply wasn't displaying it.
+
 ## [1.0.0-r7] — 2026-10-07
 
 ### Added

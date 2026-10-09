@@ -127,6 +127,8 @@ return view.extend({
 
     handleSaveApply: function(ev, mode) {
         return this.handleSave(ev).then(function() {
+            return ui.changes.apply(mode == '0');
+        }).then(function() {
             return callSync();
         }).then(function() {
             ui.addNotification(null, E('p', {}, _('Settings applied.')), 'info');

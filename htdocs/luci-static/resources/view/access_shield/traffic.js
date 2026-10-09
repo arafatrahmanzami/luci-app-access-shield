@@ -44,6 +44,7 @@ return view.extend({
 
     render: function(data) {
         var container = E('div', { 'id': 'traffic-page' });
+        var liveContainer = E('div');   // rebuilt on each poll; do NOT put config inputs here
         var devices = unwrap(data[1], 'devices');
         var traffic = data[2] || {};
         var limits  = unwrap(data[3], 'limits');
@@ -160,37 +161,11 @@ return view.extend({
         }
 
         function repaint() {
-            while (container.firstChild) container.removeChild(container.firstChild);
-
-            container.appendChild(E('div', {}, [
-                E('div', { 'class': 'cbi-section', 'style': 'margin-bottom:12px;display:flex;justify-content:space-between;align-items:center' }, [
-                    E('div', {}, [
-                        E('button', {
-                            'class': 'btn cbi-button-action',
-                            'click': function() { refresh(); }
-                        }, _('↻ Refresh')),
-                        ' ',
-                        _('Auto-refresh:'),
-                        ' ',
-                        (function() {
-                            var sel = E('select', {
-                                'style': 'padding:4px',
-                                'change': function(ev) { pollInterval = parseInt(ev.target.value, 10); }
-                            }, [
-                                E('option', { 'value': '1', 'selected': pollInterval === 1 ? true : null }, '1 s'),
-                                E('option', { 'value': '2', 'selected': pollInterval === 2 ? true : null }, '2 s'),
-                                E('option', { 'value': '5', 'selected': pollInterval === 5 ? true : null }, '5 s'),
-                                E('option', { 'value': '10', 'selected': pollInterval === 10 ? true : null }, '10 s')
-                            ]);
-                            return sel;
-                        })()
-                    ]),
-                    E('span', { 'style': 'font-size:12px;color:#888' },
-                        _('Sample: ') + (traffic.interval || 1) + _(' s'))
-                ]),
-                buildDeviceTable(),
-                buildSubnetSection()
-            ]));
+            // Rebuild ONLY the live device table. Config sections (subnet
+            // limits, controls) are built once below and must not be wiped
+            // by the poll, otherwise in-flight user typing is lost.
+            while (liveContainer.firstChild) liveContainer.removeChild(liveContainer.firstChild);
+            liveContainer.appendChild(buildDeviceTable());
         }
 
         function refresh() {
@@ -201,7 +176,43 @@ return view.extend({
             });
         }
 
-        repaint();
+        // Static top bar — built once, never touched by poll
+        var topBar = E('div', { 'class': 'cbi-section', 'style': 'margin-bottom:12px;display:flex;justify-content:space-between;align-items:center' }, [
+            E('div', {}, [
+                E('button', {
+                    'class': 'btn cbi-button-action',
+                    'click': function() { refresh(); }
+                }, _('↻ Refresh')),
+                ' ',
+                _('Auto-refresh:'),
+                ' ',
+                (function() {
+                    var sel = E('select', {
+                        'style': 'padding:4px',
+                        'change': function(ev) { pollInterval = parseInt(ev.target.value, 10); }
+                    }, [
+                        E('option', { 'value': '1', 'selected': pollInterval === 1 ? true : null }, '1 s'),
+                        E('option', { 'value': '2', 'selected': pollInterval === 2 ? true : null }, '2 s'),
+                        E('option', { 'value': '5', 'selected': pollInterval === 5 ? true : null }, '5 s'),
+                        E('option', { 'value': '10', 'selected': pollInterval === 10 ? true : null }, '10 s')
+                    ]);
+                    return sel;
+                })()
+            ]),
+            E('span', { 'style': 'font-size:12px;color:#888' },
+                _('Sample: ') + (traffic.interval || 1) + _(' s'))
+        ]);
+
+        // Static config section — built once, preserved across polls
+        var configSection = buildSubnetSection();
+
+        // Prime the live device table
+        liveContainer.appendChild(buildDeviceTable());
+
+        container.appendChild(topBar);
+        container.appendChild(liveContainer);
+        if (configSection) container.appendChild(configSection);
+
         poll.add(function() { return refresh(); }, pollInterval);
 
         return E('div', {}, [

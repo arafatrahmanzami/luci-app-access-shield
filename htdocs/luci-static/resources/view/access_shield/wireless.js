@@ -78,6 +78,51 @@ return view.extend({
             ifaceContainer.appendChild(fieldset);
         });
 
+        // ── Per-SSID summary table ────────────────────────────────
+        var summaryRows = [
+            E('tr', { 'class': 'tr table-titles' }, [
+                E('th', { 'class': 'th' }, _('Radio')),
+                E('th', { 'class': 'th' }, _('SSID')),
+                E('th', { 'class': 'th' }, _('Filter')),
+                E('th', { 'class': 'th' }, _('Allowed MACs'))
+            ])
+        ];
+
+        ifaces.forEach(function(i) {
+            var macs = i.maclist || [];
+            var filterState = (i.macfilter || '').toLowerCase();
+            var filterBadge = filterState === 'allow'
+                ? E('span', { 'style': 'display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;background:#27ae60;color:#fff' }, _('allow'))
+                : E('span', { 'style': 'display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;background:#888;color:#fff' }, _('disable'));
+
+            var macsDisplay;
+            if (macs.length === 0) {
+                macsDisplay = E('span', { 'style': 'color:#888;font-style:italic' }, _('(none)'));
+            } else if (macs.length <= 3) {
+                macsDisplay = E('span', { 'style': 'font-family:monospace;font-size:11px' }, macs.join(', '));
+            } else {
+                macsDisplay = E('span', {}, [
+                    E('span', { 'style': 'font-family:monospace;font-size:11px' }, macs.slice(0, 3).join(', ')),
+                    ' ',
+                    E('span', { 'style': 'color:#888' }, _('+%d more').format(macs.length - 3))
+                ]);
+            }
+
+            summaryRows.push(E('tr', { 'class': 'tr' }, [
+                E('td', { 'class': 'td' }, [ E('code', {}, i.device || '\u2014') ]),
+                E('td', { 'class': 'td' }, [ i.ssid || i.section || '\u2014' ]),
+                E('td', { 'class': 'td' }, [ filterBadge ]),
+                E('td', { 'class': 'td' }, [ macsDisplay ])
+            ]));
+        });
+
+        var summaryTable = E('div', { 'class': 'cbi-section', 'style': 'margin-bottom:1.5em' }, [
+            E('h3', {}, _('Per-SSID filtering status')),
+            E('p', { 'style': 'font-size:12px;color:#888' },
+                _('Current hostapd MAC filter state per SSID. Filter must be "allow" for the checkbox list below to have any effect.')),
+            E('table', { 'class': 'table' }, summaryRows)
+        ]);
+
         function getActiveMac() {
             if (macSelect.value === 'custom') return (customMac.value || '').trim().toUpperCase();
             return (macSelect.value || '').trim().toUpperCase();
@@ -138,6 +183,7 @@ return view.extend({
             E('p', { 'style': 'opacity:0.85;font-size:0.95em;margin-top:-4px;margin-bottom:16px' }, _('Device Access Control & Traffic Monitor')),
             E('p', { 'class': 'cbi-map-descr' },
                 _('Manage which SSIDs a device is allowed to connect to using hostapd MAC filtering.')),
+            summaryTable,
             E('div', { 'class': 'cbi-section' }, [
                 E('div', { 'class': 'cbi-value' }, [
                     E('label', { 'class': 'cbi-value-title' }, _('Device')),
