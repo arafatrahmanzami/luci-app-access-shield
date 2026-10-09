@@ -17,6 +17,7 @@ return view.extend({
         var scan = data[1] || {};
         var current = 0;
         var busy = false;
+        var fwWrite = (uci.get('access_shield', 'settings', 'firewall_write') === '1');
 
         function buildAllSteps() {
             var list = [];
@@ -123,18 +124,43 @@ return view.extend({
                     E('p', { 'style': 'color:#e67e22;font-weight:bold' }, '⚠ ' + _('Missing in zone "') + zn + _('": ') + missing.join(', ')),
                     E('p', {}, _('Devices may fail to reach the router.'))
                 ]);
-                zAction = {
-                    label: _('Add missing rules'),
-                    run: function() {
-                        return callApply({
-                            step: 'ensure_zone_rules',
-                            zone: zn,
-                            dhcp: !ad ? '1' : '0',
-                            dns:  !an ? '1' : '0',
-                            luci: !al ? '1' : '0'
-                        });
-                    }
-                };
+                if (fwWrite) {
+                    zAction = {
+                        label: _('Add missing rules'),
+                        run: function() {
+                            return callApply({
+                                step: 'ensure_zone_rules',
+                                zone: zn,
+                                dhcp: !ad ? '1' : '0',
+                                dns:  !an ? '1' : '0',
+                                luci: !al ? '1' : '0'
+                            });
+                        }
+                    };
+                } else {
+                    zAction = {
+                        label: _('How to fix manually'),
+                        run: function() {
+                            ui.showModal(_('Firewall rules missing'), [
+                                E('p', {}, _('Access Shield is configured to never write /etc/config/firewall by default.')),
+                                E('p', {}, _('To fix this in the UI:')),
+                                E('ol', {}, [
+                                    E('li', {}, _('Open Network -> Firewall -> Traffic Rules.')),
+                                    E('li', {}, _('Click Add. Name it something like Allow-DHCP-AccessShield.')),
+                                    E('li', {}, _('Source zone: ') + zn),
+                                    E('li', {}, _('Protocol: UDP, Destination port: 67 (for DHCP) or 53 (for DNS).')),
+                                    E('li', {}, _('Action: Accept. Save & Apply.')),
+                                    E('li', {}, _('For LuCI access, add a similar rule with TCP ports 80 and 443.'))
+                                ]),
+                                E('p', { 'style': 'margin-top:1em' },
+                                    _('Or enable "Allow Access Shield to write firewall rules" in Settings and reopen this page.')),
+                                E('div', { 'class': 'right' }, [
+                                    E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+                                ])
+                            ]);
+                        }
+                    };
+                }
             }
             list.push({ title: _('Firewall Zone Rules'), body: zBody, action: zAction });
 

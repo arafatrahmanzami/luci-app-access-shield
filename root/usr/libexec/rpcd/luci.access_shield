@@ -1063,6 +1063,66 @@ EOS
             json_add_boolean "ok" 1
             ;;
 
+        ensure_zone_rules)
+            local zone dhcp dns luci allow_write snap sid
+            json_get_var zone "zone"
+            json_get_var dhcp "dhcp"
+            json_get_var dns  "dns"
+            json_get_var luci "luci"
+
+            [ -z "$zone" ] && { json_add_boolean "ok" 0; json_add_string "error" "zone required"; json_dump; return; }
+
+            allow_write=$(uci -q get access_shield.settings.firewall_write)
+            [ "$allow_write" = "1" ] || {
+                json_add_boolean "ok" 0
+                json_add_string "error" "firewall_write disabled in Settings; add the rules manually in Network -> Firewall"
+                json_dump; return
+            }
+
+            snap="/tmp/access_shield_wizard_fw.bak"
+            cp /etc/config/firewall "$snap" 2>/dev/null
+
+            if [ "$dhcp" = "1" ]; then
+                sid=$(uci -q add firewall rule)
+                uci -q set firewall.$sid.name='Allow-DHCP-AccessShield'
+                uci -q set firewall.$sid.src="$zone"
+                uci -q set firewall.$sid.proto='udp'
+                uci -q set firewall.$sid.dest_port='67'
+                uci -q set firewall.$sid.target='ACCEPT'
+            fi
+            if [ "$dns" = "1" ]; then
+                sid=$(uci -q add firewall rule)
+                uci -q set firewall.$sid.name='Allow-DNS-AccessShield'
+                uci -q set firewall.$sid.src="$zone"
+                uci -q set firewall.$sid.proto='udp'
+                uci -q set firewall.$sid.dest_port='53'
+                uci -q set firewall.$sid.target='ACCEPT'
+            fi
+            if [ "$luci" = "1" ]; then
+                sid=$(uci -q add firewall rule)
+                uci -q set firewall.$sid.name='Allow-LuCI-AccessShield'
+                uci -q set firewall.$sid.src="$zone"
+                uci -q set firewall.$sid.proto='tcp'
+                uci -q set firewall.$sid.dest_port='80 443'
+                uci -q set firewall.$sid.target='ACCEPT'
+            fi
+
+            uci -q commit firewall
+
+            /etc/init.d/firewall reload >/dev/null 2>&1
+            sleep 1
+            if nft list table inet fw4 >/dev/null 2>&1; then
+                json_add_boolean "ok" 1
+                json_add_string "message" "Firewall rules added to zone $zone"
+            else
+                cp "$snap" /etc/config/firewall 2>/dev/null
+                uci -q commit firewall
+                /etc/init.d/firewall reload >/dev/null 2>&1 &
+                json_add_boolean "ok" 0
+                json_add_string "error" "fw4 failed to reload; firewall restored from snapshot"
+            fi
+            ;;
+
         *)
             json_add_boolean "ok" 0
             json_add_string "error" "unknown step: $step"

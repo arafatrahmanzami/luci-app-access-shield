@@ -6,24 +6,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.0-r9] — 2026-10-09
 
-### Added
-
-**Dashboard — configurable auto-refresh**
-- Read `access_shield.settings.dashboard_interval` (default 15s, 0 = off).
-- Live override dropdown on the Dashboard (`Refresh: [dropdown]`)
-  changes the interval immediately without saving; a page reload picks
-  up the Settings value again.
-- Replaced LuCI `poll.add` with a module-scope `setInterval` that is
-  cleared via `view.unload`. Added 5/10/15/30/60/120s and Off options.
-
-**Wireless tab — per-SSID MAC detail modal**
-- Click an SSID name in the per-SSID filtering status table to open a
-  modal listing every MAC currently allowed on that SSID with a
-  per-MAC Remove button and an Add MAC input. Uses the existing
-  `set_mac_filter` RPC (add/remove) — no rpcd changes.
-
-## [1.0.0-r9] — 2026-10-09
-
 ### Fixed
 
 **Traffic tab — auto-refresh dropdown did nothing**
@@ -50,9 +32,38 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (default 15, `0` disables).
 - `firewall_write` — permission flag (default OFF). When off, the
   Setup wizard only verifies firewall rules and points you at
-  Network → Firewall. When on, the wizard's “Add missing rules”
-  button (added in a follow-up commit) will write the missing
-  allow rules into `/etc/config/firewall` with rollback on failure.
+  Network → Firewall. When on, the wizard's "Add missing rules"
+  button writes the missing allow rules into `/etc/config/firewall`
+  with rollback on failure.
+
+**Dashboard — configurable auto-refresh**
+- Read `access_shield.settings.dashboard_interval` (default 15s, 0 = off).
+- Live override dropdown on the Dashboard (`Refresh: [dropdown]`)
+  changes the interval immediately without saving; a page reload picks
+  up the Settings value again.
+- Replaced LuCI `poll.add` with a module-scope `setInterval` that is
+  cleared via `view.unload`. Added 5/10/15/30/60/120s and Off options.
+
+**Wireless tab — per-SSID MAC detail modal**
+- Click an SSID name in the per-SSID filtering status table to open a
+  modal listing every MAC currently allowed on that SSID with a
+  per-MAC Remove button and an Add MAC input. Uses the existing
+  `set_mac_filter` RPC (add/remove) — no rpcd changes.
+
+**Setup wizard — optional firewall write (default OFF)**
+- New `access_shield.settings.firewall_write` flag, default `0`.
+- When OFF: the Setup wizard's step-4 button becomes "How to fix
+  manually" and opens a modal with step-by-step instructions for
+  Network -> Firewall. The app's promise to never touch
+  `/etc/config/firewall` is preserved.
+- When ON: the button keeps its old label and calls a new
+  `ensure_zone_rules` rpcd case that writes the missing allow rules
+  into `/etc/config/firewall`, snapshots the config first, reloads
+  fw4, and restores the snapshot if fw4 fails to come up.
+- Closes the investigation into the previously-dead
+  `ensure_zone_rules` button — the rpcd case it referenced never
+  existed.
+
 
 ## [1.0.0-r8] — 2026-10-09
 
