@@ -32,6 +32,7 @@ var callTraffic     = rpc.declare({ object: 'luci.access_shield', method: 'traff
 var callGetLimits   = rpc.declare({ object: 'luci.access_shield', method: 'get_speed_limits' });
 var callListSubnets = rpc.declare({ object: 'luci.access_shield', method: 'list_subnets' });
 var callSetSubnetLimit = rpc.declare({ object: 'luci.access_shield', method: 'set_subnet_limit', params: ['cidr','device','label','dl_val','dl_unit','ul_val','ul_unit'] });
+var callSetSetting    = rpc.declare({ object: 'luci.access_shield', method: 'set_setting', params: ['key','value'] });
 
 function unwrap(d, k) {
     if (!d) return [];
@@ -234,6 +235,13 @@ return view.extend({
                             if (isNaN(v) || v < 0) v = 2;
                             trafficPollInterval = v;
                             scheduleTrafficRefresh();
+                            callSetSetting('traffic_interval', String(v)).then(function(res) {
+                                if (res && res.ok) {
+                                    ui.addNotification(null, E('p', {}, _('Auto-refresh saved: ') + v + _(' s')), 'info');
+                                } else {
+                                    ui.addNotification(null, E('p', {}, _('Save failed.')), 'error');
+                                }
+                            });
                         }
                     }, pollChoices.map(function(v) {
                         var label = (v === 0) ? _('Off') : (v + ' s');

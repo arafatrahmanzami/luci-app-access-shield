@@ -8,29 +8,87 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-**LuCI 26.073 (SNAPSHOT) — `unknown step: J_T1` on Setup and Status**
-- LuCI 26.073's minifier mangles `rpc.declare({..., params:['step']})` when the call site passes an object. The serializer replaced the object with an internal variable name, and the backend received `{step:"J_T1"}`.
-- Fix: switched `setup.js` and `status.js` to `expect: {}` so the raw object passes through unchanged.
+**LuCI 26.073 (OpenWrt SNAPSHOT) — Setup Wizard and Status page `unknown step:` error**
+- Two bugs stacked: (1) `do_setup_apply` called `json_init` before reading
+  its case-handler variables, wiping the parsed payload. (2) LuCI
+  26.073's minifier + rpc layer silently dropped object arguments to
+  `rpc.declare({...})` calls, so the backend received only
+  `{ubus_rpc_session}` and no step name.
+- Fix: all `json_get_var` reads moved before `json_init` in
+  `do_setup_apply`. Client-side, `setup.js` and `status.js` now declare
+  `params: ['data']` and pass `JSON.stringify({...})` — a single string
+  survives LuCI 26.073's argument stripping. Backend parses `data` via
+  `grep -o` and falls back to `json_get_var` for backwards compat.
 
-**Dashboard Edit/Bind modal pre-fill and dropdown**
-- Edit modal previously pre-filled with live device state instead of the binding target, and the Interface dropdown was hardcoded to br-lan / br-lan2 / br-lan3.
-- Fix: Edit now pre-fills from `bound_name` / `bound_ipv4` / `bound_iface` (fallback to live). All three modals (Edit, Bind, Add) build their Interface dropdown dynamically from `list_bridges`.
+**Dashboard — Edit modal pre-fill and Interface dropdown**
+- Edit previously pre-filled from live device state instead of the
+  binding target, and the dropdown was hardcoded to br-lan / br-lan2 /
+  br-lan3.
+- Fix: Edit pre-fills from `bound_name` / `bound_ipv4` / `bound_iface`
+  with live fallback. All three modals (Edit, Bind, Add) build their
+  Interface dropdown from `list_bridges`.
 
-**Add modal duplicate check was bypassable**
-- The JS guard used the cached `bindingByMac` snapshot, which could be stale if a MAC was bound by another path between page load and the Add click.
-- Fix: `openAddModal` now performs a live `callListBindings()` before submitting.
+**Dashboard — Duplicate MAC guard bypassable**
+- Add modal used the cached `bindingByMac` snapshot. If a MAC was bound
+  by another path (CLI, admin safeguard, another tab) after page load,
+  the guard missed and `do_bind_device` silently overwrote via `uci set`.
+- Fix: rpcd `do_bind_device` now refuses duplicates (`{ok:false,
+  error:"MAC already bound in section X"}`). JS Add modal checks live
+  `callListBindings()` before submitting.
 
-**rpcd — silent overwrite on duplicate MAC**
-- `do_bind_device` used `uci set` without a duplicate check, silently overwriting any existing binding for the same MAC.
-- Fix: refuses duplicate MACs with `{"ok":false,"error":"MAC already bound in section <name>"}`. Edit still works because it performs unbind-then-bind.
+**Dashboard — bind failures were silent**
+- The Add/Bind/Edit call chains did not check `res.ok`. When the backend
+  refused, the UI showed "Device added." anyway.
+- Fix: all three now inspect `res.ok` and show red `Failed: <error>` on
+  refusal.
+
+**Dashboard and Traffic — auto-refresh dropdown did not persist**
+- `uci.set()` + `uci.commit()` from a view handler does not work in
+  LuCI 26.073 (`uci.commit is not a function`; the global staging badge
+  also appeared).
+- Fix: new rpcd method `set_setting(key, value)` writes UCI server-side
+  and commits. The dropdown change handler calls it via RPC. No staging
+  badge, no `Save & Apply` needed, value persists across reloads.
 
 ### Added
 
-**Dashboard — smart Live → Bound display**
-- Each device row shows both states at a glance when they differ:
-  - Interface: `br-lan → br-lan2` (live in grey, bound in blue)
-  - IP: `192.168.1.2 → 192.168.200.152`
-- New **Bridge** filter in the filter row lets you scope to any bridge, matching either live or bound state.
+**Dashboard — Smart Live → Bound display**
+- When a device is bound to one bridge but live on another, both are
+  shown: `br-lan → br-lan2` in grey → blue, same for IP.
+
+**Dashboard — Bridge filter dropdown**
+- Filters devices by live or bound interface.
+
+**Dashboard — Refresh button**
+- Dedicated `↻ Refresh` button next to the auto-refresh dropdown.
+
+**Dashboard — Local 1-second ticket ticker**
+- The `🎫 30m 12s` countdown now decrements every second in the browser.
+  The dashboard poll interval is unaffected — the ticker is local DOM
+  only, no extra RPC.
+
+**Interfaces tab — Orphaned sections table** (from r7, retained)
+- Already shipped in r7; unchanged.
+
+**rpcd — `set_setting` method**
+- Generic key/value setter for `access_shield.settings.*`. Used by the
+  Dashboard and Traffic auto-refresh dropdowns to save without staging.
+  Refuses if `key` is empty.
+
+### Notes
+
+**Ticket persistence across reboot / load-shedding — already correct**
+- Tickets are stored in UCI (`/etc/config/access_shield`, persistent
+  flash) with an absolute `expires_at` Unix timestamp. The `ticketd`
+  daemon compares `date +%s` against `expires_at` every 10 seconds. On
+  reboot, `/etc/config/access_shield` is loaded from flash and the first
+  tick after NTP sync correctly deletes any expired ticket. No code
+  changes needed for this — it has always been the case.
+
+**Tested on**
+- ImmortalWrt 24.10.6 (opkg) — pending regression test
+- OpenWrt 25.12.5 (apk) — pending regression test
+- OpenWrt SNAPSHOT r33269 mipsel_24kc (apk, Mi R3) — full r10 validation
 
 ## [1.0.0-r9] — 2026-10-09
 

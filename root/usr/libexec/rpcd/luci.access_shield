@@ -86,6 +86,18 @@ EOS
     json_dump
 }
 
+do_set_setting() {
+    local key value
+    json_get_var key "key"
+    json_get_var value "value"
+    [ -z "$key" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "key required"; json_dump; return; }
+    uci -q set access_shield.settings.$key="$value"
+    uci -q commit access_shield
+    json_init
+    json_add_boolean "ok" 1
+    json_dump
+}
+
 do_remove_interface() {
     local iface sec d s
     json_get_var iface "iface"
@@ -990,17 +1002,38 @@ do_setup_scan() {
 }
 
 do_setup_apply() {
-    local step
-    json_get_var step "step"
+    local step ip mac iface name mode section zone dhcp dns luci allow_write snap sid
+    local data
+    json_get_var data "data"
+    if [ -n "$data" ]; then
+        step=$(echo "$data" | grep -o '"step":"[^"]*' | cut -d'"' -f4)
+        ip=$(echo "$data" | grep -o '"ip":"[^"]*' | cut -d'"' -f4)
+        mac=$(echo "$data" | grep -o '"mac":"[^"]*' | cut -d'"' -f4)
+        iface=$(echo "$data" | grep -o '"iface":"[^"]*' | cut -d'"' -f4)
+        name=$(echo "$data" | grep -o '"name":"[^"]*' | cut -d'"' -f4)
+        mode=$(echo "$data" | grep -o '"mode":"[^"]*' | cut -d'"' -f4)
+        section=$(echo "$data" | grep -o '"section":"[^"]*' | cut -d'"' -f4)
+        zone=$(echo "$data" | grep -o '"zone":"[^"]*' | cut -d'"' -f4)
+        dhcp=$(echo "$data" | grep -o '"dhcp":"[^"]*' | cut -d'"' -f4)
+        dns=$(echo "$data" | grep -o '"dns":"[^"]*' | cut -d'"' -f4)
+        luci=$(echo "$data" | grep -o '"luci":"[^"]*' | cut -d'"' -f4)
+    else
+        json_get_var step "step"
+        json_get_var ip "ip"
+        json_get_var mac "mac"
+        json_get_var iface "iface"
+        json_get_var name "name"
+        json_get_var mode "mode"
+        json_get_var section "section"
+        json_get_var zone "zone"
+        json_get_var dhcp "dhcp"
+        json_get_var dns "dns"
+        json_get_var luci "luci"
+    fi
 
     json_init
     case "$step" in
         bind_admin)
-            local ip mac iface name
-            json_get_var ip "ip"
-            json_get_var mac "mac"
-            json_get_var iface "iface"
-            json_get_var name "name"
 
             [ -n "$mac" ] && [ -n "$ip" ] || {
                 json_add_boolean "ok" 0
@@ -1030,8 +1063,6 @@ EOS
             ;;
 
         set_interface_mode)
-            local mode
-            json_get_var mode "mode"
             [ -z "$mode" ] && mode="reply_only"
 
             target=$(uci -q get access_shield.settings.default_iface)
@@ -1061,8 +1092,6 @@ EOS
             ;;
 
         ensure_dhcp_static)
-            local section
-            json_get_var section "section"
             [ -z "$section" ] && { json_add_boolean "ok" 0; json_dump; return; }
 
             # Snapshot DHCP before change
@@ -1103,11 +1132,6 @@ EOS
             ;;
 
         ensure_zone_rules)
-            local zone dhcp dns luci allow_write snap sid
-            json_get_var zone "zone"
-            json_get_var dhcp "dhcp"
-            json_get_var dns  "dns"
-            json_get_var luci "luci"
 
             [ -z "$zone" ] && { json_add_boolean "ok" 0; json_add_string "error" "zone required"; json_dump; return; }
 
@@ -1289,6 +1313,7 @@ case "$1" in
         json_add_object "list_bridges"; json_close_object
         json_add_object "add_bridge";   json_close_object
         json_add_object "remove_interface"; json_close_object
+        json_add_object "set_setting"; json_close_object
         json_add_object "status";        json_close_object
         json_add_object "sync";          json_close_object
         json_add_object "migrate_scan";  json_close_object
@@ -1327,6 +1352,7 @@ case "$1" in
             list_bridges)   do_list_bridges ;;
             add_bridge)     do_add_bridge ;;
             remove_interface) do_remove_interface ;;
+            set_setting) do_set_setting ;;
             status)         do_status ;;
             sync)           do_sync ;;
             migrate_scan)   do_migrate_scan ;;

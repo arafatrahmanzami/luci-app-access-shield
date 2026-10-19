@@ -5,7 +5,7 @@
 'require rpc';
 
 var callScan  = rpc.declare({ object: 'luci.access_shield', method: 'setup_scan' });
-var callApply = rpc.declare({ object: 'luci.access_shield', method: 'setup_apply', expect: {} });
+var callApply = rpc.declare({ object: 'luci.access_shield', method: 'setup_apply', params: ['data'] });
 
 return view.extend({
     load: function() {
@@ -50,7 +50,7 @@ return view.extend({
                     label: _('Save & Continue'),
                     run: function() {
                         if (bridgeSel.value === scan.target_bridge) return Promise.resolve({ ok: 1 });
-                        return callApply({ step: 'set_default_iface', iface: bridgeSel.value });
+                        return callApply(JSON.stringify({ step: 'set_default_iface', iface: bridgeSel.value }));
                     }
                 }
             });
@@ -70,13 +70,13 @@ return view.extend({
                 aAction = {
                     label: _('Bind my device'),
                     run: function() {
-                        return callApply({
+                        return callApply(JSON.stringify({
                             step: 'bind_admin',
                             mac: scan.admin_mac,
                             ip: scan.admin_ip,
                             iface: scan.admin_iface || scan.target_bridge,
                             name: 'Admin-Safeguard'
-                        });
+                        }));
                     }
                 };
             } else {
@@ -102,7 +102,7 @@ return view.extend({
                 ]);
                 dAction = {
                     label: _('Make static-only'),
-                    run: function() { return callApply({ step: 'ensure_dhcp_static', section: dhcpSec }); }
+                    run: function() { return callApply(JSON.stringify({ step: 'ensure_dhcp_static', section: dhcpSec })); }
                 };
             }
             list.push({ title: _('Static-Only DHCP'), body: dBody, action: dAction });
@@ -128,13 +128,13 @@ return view.extend({
                     zAction = {
                         label: _('Add missing rules'),
                         run: function() {
-                            return callApply({
+                            return callApply(JSON.stringify({
                                 step: 'ensure_zone_rules',
                                 zone: zn,
                                 dhcp: !ad ? '1' : '0',
                                 dns:  !an ? '1' : '0',
                                 luci: !al ? '1' : '0'
-                            });
+                            }));
                         }
                     };
                 } else {
@@ -173,7 +173,7 @@ return view.extend({
                 iBody = E('p', { 'style': 'color:#e67e22;font-weight:bold' }, '⚠ ' + _('Current mode: ') + mode);
                 iAction = {
                     label: _('Set reply_only'),
-                    run: function() { return callApply({ step: 'set_interface_mode', mode: 'reply_only' }); }
+                    run: function() { return callApply(JSON.stringify({ step: 'set_interface_mode', mode: 'reply_only' })); }
                 };
             }
             list.push({ title: _('Enforcement Mode'), body: iBody, action: iAction });
@@ -186,7 +186,7 @@ return view.extend({
                     on ? '✓ ' + _('Running.') : '⚠ ' + _('Currently OFF.')),
                 action: {
                     label: on ? _('Turn OFF') : _('Turn ON'),
-                    run: function() { return callApply({ step: on ? 'disable_master' : 'enable_master' }); }
+                    run: function() { return callApply(JSON.stringify({ step: on ? 'disable_master' : 'enable_master' })); }
                 }
             });
 

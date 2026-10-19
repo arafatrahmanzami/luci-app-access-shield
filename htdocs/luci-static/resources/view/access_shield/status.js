@@ -5,7 +5,7 @@
 'require rpc';
 
 var callScan  = rpc.declare({ object: 'luci.access_shield', method: 'setup_scan' });
-var callApply = rpc.declare({ object: 'luci.access_shield', method: 'setup_apply', expect: {} });
+var callApply = rpc.declare({ object: 'luci.access_shield', method: 'setup_apply', params: ['data'] });
 
 return view.extend({
     load: function() {
@@ -44,7 +44,7 @@ return view.extend({
             var payload = Object.assign({}, params || {});
             payload.step = stepName;
 
-            return callApply(payload).then(function(r) {
+            return callApply(JSON.stringify(payload)).then(function(r) {
                 applying = false;
                 if (r && r.ok) {
                     ui.addNotification(null, E('p', {}, _('Step applied successfully.')), 'info');

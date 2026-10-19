@@ -46,8 +46,8 @@ function ensureArray(data, key) {
 }
 
 
-var callListDevices  = rpc.declare({ object: 'luci.access_shield', method: 'list_devices',  expect: { devices: [] } });
-var callListBindings = rpc.declare({ object: 'luci.access_shield', method: 'list_bindings', expect: { bindings: [] } });
+var callListDevices  = rpc.declare({ object: 'luci.access_shield', method: 'list_devices' });
+var callListBindings = rpc.declare({ object: 'luci.access_shield', method: 'list_bindings' });
 var callBindDevice   = rpc.declare({ object: 'luci.access_shield', method: 'bind_device',   params: ['mac','ip','iface','name'] });
 var callUnbindDevice = rpc.declare({ object: 'luci.access_shield', method: 'unbind_device', params: ['mac'] });
 var callRenameDevice = rpc.declare({ object: 'luci.access_shield', method: 'rename_device', params: ['mac','name'] });
@@ -59,7 +59,8 @@ var callIssueTicket  = rpc.declare({ object: 'luci.access_shield', method: 'issu
 var callRevokeTicket = rpc.declare({ object: 'luci.access_shield', method: 'revoke_ticket', params: ['mac'] });
 var callSetAlias     = rpc.declare({ object: 'luci.access_shield', method: 'set_alias', params: ['ip','name','mac'] });
 var callSetLimit     = rpc.declare({ object: 'luci.access_shield', method: 'set_speed_limit', params: ['mac','ip','dl_val','dl_unit','ul_val','ul_unit'] });
-var callListBridges  = rpc.declare({ object: 'luci.access_shield', method: 'list_bridges',  expect: { bridges: [] } });
+var callListBridges  = rpc.declare({ object: 'luci.access_shield', method: 'list_bridges' });
+var callSetSetting   = rpc.declare({ object: 'luci.access_shield', method: 'set_setting', params: ['key','value'] });
 
 function signalIcon(sig) {
     if (sig === null || sig === undefined || sig === '') return '';
@@ -130,12 +131,32 @@ return view.extend({
             E('option', { 'value': '0',   'selected': configuredInterval === 0   ? true : null }, _('Off'))
         ]);
 
-        var refreshRow = E('div', { 'style': 'font-size:12px;margin-bottom:8px;color:#aaa' }, [
+        var refreshRow = E('div', { 'style': 'font-size:12px;margin-bottom:8px;color:#aaa;display:flex;align-items:center' }, [
+            E('button', {
+                'class': 'btn cbi-button-action',
+                'style': 'font-size:12px;padding:2px 8px;margin-right:8px',
+                'click': function() { refresh(); }
+            }, '↻ ' + _('Refresh')),
             _('Auto-refresh:'), ' ', refreshSel,
             ' ',
             E('span', { 'style': 'color:#888' },
-                _('(Default from Settings; changes here apply immediately but are not saved.)'))
+                _('(Saves automatically)'))
         ]);
+
+        // Add save logic to dropdown: set -> save (stage) -> commit (persist)
+        refreshSel.addEventListener('change', function(ev) {
+            var v = parseInt(ev.target.value, 10);
+            if (isNaN(v) || v < 0) v = 15;
+            dashboardPollInterval = v;
+            scheduleDashboardRefresh();
+            callSetSetting('dashboard_interval', String(v)).then(function(res) {
+                if (res && res.ok) {
+                    ui.addNotification(null, E('p', {}, _('Auto-refresh saved: ') + v + _(' s')), 'info');
+                } else {
+                    ui.addNotification(null, E('p', {}, _('Save failed.')), 'error');
+                }
+            });
+        });
         bindingList.forEach(function(b) {
             bindingByMac[(b.mac || '').toLowerCase()] = b;
         });
@@ -496,6 +517,12 @@ function openEditModal(d, limits) {
                     // Update binding: unbind + rebind
                     callUnbindDevice(d.mac).then(function() {
                         return callBindDevice(d.mac, ip, iface, name);
+                    }).then(function(res) {
+                        if (res && !res.ok) {
+                            var err = (res && res.error) ? res.error : _('unknown error');
+                            ui.addNotification(null, E('p', {}, _('Failed: ') + err), 'error');
+                            return Promise.reject('bind failed');
+                        }
                     }).then(function() {
                         // Save alias if changed
                         var aliasVal = aliasIn.value.trim();
@@ -560,11 +587,18 @@ function openBindModal(d) {
                         'click': function() {
                             ui.hideModal();
                             callBindDevice(d.mac, ipInput.value.trim(), ifaceSelect.value, nameInput.value.trim())
-                                .then(function() {
-                                    ui.addNotification(null, E('p', {}, _('Device bound.')), 'info');
-                                    return new Promise(function(r) { setTimeout(r, 1500); });
+                                .then(function(res) {
+                                    if (res && res.ok) {
+                                        ui.addNotification(null, E('p', {}, _('Device bound.')), 'info');
+                                        return new Promise(function(r) { setTimeout(r, 1500); });
+                                    } else {
+                                        var err = (res && res.error) ? res.error : _('unknown error');
+                                        ui.addNotification(null, E('p', {}, _('Failed: ') + err), 'error');
+                                        return Promise.reject('bind failed');
+                                    }
                                 })
-                                .then(refresh);
+                                .then(refresh)
+                                .catch(function(){});
                         }
                     }, _('Bind'))
                 ])
@@ -640,11 +674,18 @@ function openBindModal(d) {
                                 }
                                 ui.hideModal();
                                 callBindDevice(mac, ip, ifc, nm)
-                                    .then(function() {
-                                        ui.addNotification(null, E('p', {}, _('Device added.')), 'info');
-                                        return new Promise(function(r) { setTimeout(r, 1500); });
+                                    .then(function(res) {
+                                        if (res && res.ok) {
+                                            ui.addNotification(null, E('p', {}, _('Device added.')), 'info');
+                                            return new Promise(function(r) { setTimeout(r, 1500); });
+                                        } else {
+                                            var err = (res && res.error) ? res.error : _('unknown error');
+                                            ui.addNotification(null, E('p', {}, _('Failed: ') + err), 'error');
+                                            return Promise.reject('bind failed');
+                                        }
                                     })
-                                    .then(refresh);
+                                    .then(refresh)
+                                    .catch(function(){});
                             });
                         }
                     }, _('Add'))
@@ -825,7 +866,7 @@ function openBindModal(d) {
                         }
                     }, _('🎫 Ticket')) : '',
                     ticket ? E('span', {
-                        'class': 'btn cbi-button',
+                        'class': 'btn cbi-button ticket-badge-' + (d.mac || '').replace(/:/g, ''),
                         'style': 'font-size:11px;padding:2px 6px;background:#f39c12;color:#fff;cursor:pointer',
                         'title': _('Click to cancel ticket'),
                         'click': function(ev) {
@@ -898,6 +939,21 @@ function openBindModal(d) {
             }
         }
 
+        // Local ticker for tickets (runs every 1s)
+        var ticketTicker = setInterval(function() {
+            Object.keys(ticketsCache).forEach(function(mac) {
+                var t = ticketsCache[mac];
+                if (t && t.seconds_left > 0) {
+                    t.seconds_left--;
+                    var spans = document.querySelectorAll('.ticket-badge-' + mac.replace(/:/g, ''));
+                    spans.forEach(function(span) {
+                        span.textContent = _('🎫 ') + fmtDuration(t.seconds_left);
+                        if (t.seconds_left <= 0) span.parentNode.removeChild(span);
+                    });
+                }
+            });
+        }, 1000);
+
         function refresh() {
             return Promise.all([ callListDevices(), callListBindings(), callGetLimits(), callListAliases(), callListTickets(), callListBridges() ]).then(function(r) {
                 deviceList = ensureArray(r[0], 'devices');
@@ -941,5 +997,6 @@ function openBindModal(d) {
     unload: function() {
         dashboardPollInterval = 0;
         stopDashboardPoll();
+        if (typeof ticketTicker !== 'undefined') clearInterval(ticketTicker);
     }
 });
