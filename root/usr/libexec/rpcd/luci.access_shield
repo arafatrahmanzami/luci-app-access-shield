@@ -260,6 +260,15 @@ do_bind_device() {
     mac=$(echo "$mac" | tr 'A-Z' 'a-z')
     [ -z "$mac" ] && { json_init; json_add_boolean "ok" 0; json_add_string "error" "mac required"; json_dump; return; }
     [ -z "$ip" ] && ip="0.0.0.0"
+
+    # Duplicate guard: refuse if MAC is already bound in any section.
+    # Edit uses unbind-then-bind, so this only blocks the Add modal from overwriting.
+    for s in $(uci show access_shield 2>/dev/null | grep '=binding' | cut -d. -f2 | cut -d= -f1); do
+        existing_mac=$(uci -q get access_shield.$s.mac | tr 'A-Z' 'a-z')
+        if [ "$existing_mac" = "$mac" ]; then
+            json_init; json_add_boolean "ok" 0; json_add_string "error" "MAC already bound in section $s"; json_dump; return
+        fi
+    done
     [ -z "$iface" ] && iface="br-lan2"
     [ -z "$name" ] && name="device-$(echo "$mac" | tr -d ':')"
 

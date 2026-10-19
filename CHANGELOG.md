@@ -4,6 +4,34 @@ All notable changes to Access Shield are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r10] — 2026-10-19
+
+### Fixed
+
+**LuCI 26.073 (SNAPSHOT) — `unknown step: J_T1` on Setup and Status**
+- LuCI 26.073's minifier mangles `rpc.declare({..., params:['step']})` when the call site passes an object. The serializer replaced the object with an internal variable name, and the backend received `{step:"J_T1"}`.
+- Fix: switched `setup.js` and `status.js` to `expect: {}` so the raw object passes through unchanged.
+
+**Dashboard Edit/Bind modal pre-fill and dropdown**
+- Edit modal previously pre-filled with live device state instead of the binding target, and the Interface dropdown was hardcoded to br-lan / br-lan2 / br-lan3.
+- Fix: Edit now pre-fills from `bound_name` / `bound_ipv4` / `bound_iface` (fallback to live). All three modals (Edit, Bind, Add) build their Interface dropdown dynamically from `list_bridges`.
+
+**Add modal duplicate check was bypassable**
+- The JS guard used the cached `bindingByMac` snapshot, which could be stale if a MAC was bound by another path between page load and the Add click.
+- Fix: `openAddModal` now performs a live `callListBindings()` before submitting.
+
+**rpcd — silent overwrite on duplicate MAC**
+- `do_bind_device` used `uci set` without a duplicate check, silently overwriting any existing binding for the same MAC.
+- Fix: refuses duplicate MACs with `{"ok":false,"error":"MAC already bound in section <name>"}`. Edit still works because it performs unbind-then-bind.
+
+### Added
+
+**Dashboard — smart Live → Bound display**
+- Each device row shows both states at a glance when they differ:
+  - Interface: `br-lan → br-lan2` (live in grey, bound in blue)
+  - IP: `192.168.1.2 → 192.168.200.152`
+- New **Bridge** filter in the filter row lets you scope to any bridge, matching either live or bound state.
+
 ## [1.0.0-r9] — 2026-10-09
 
 ### Fixed

@@ -59,6 +59,7 @@ var callIssueTicket  = rpc.declare({ object: 'luci.access_shield', method: 'issu
 var callRevokeTicket = rpc.declare({ object: 'luci.access_shield', method: 'revoke_ticket', params: ['mac'] });
 var callSetAlias     = rpc.declare({ object: 'luci.access_shield', method: 'set_alias', params: ['ip','name','mac'] });
 var callSetLimit     = rpc.declare({ object: 'luci.access_shield', method: 'set_speed_limit', params: ['mac','ip','dl_val','dl_unit','ul_val','ul_unit'] });
+var callListBridges  = rpc.declare({ object: 'luci.access_shield', method: 'list_bridges',  expect: { bridges: [] } });
 
 function signalIcon(sig) {
     if (sig === null || sig === undefined || sig === '') return '';
@@ -82,20 +83,22 @@ function badge(text, bg) {
 
 return view.extend({
     load: function() {
-        return Promise.all([ uci.load('access_shield'), callListDevices(), callListBindings(), callGetLimits(), callListAliases(), callListTickets() ]);
+        return Promise.all([ uci.load('access_shield'), callListDevices(), callListBindings(), callGetLimits(), callListAliases(), callListTickets(), callListBridges() ]);
     },
 
     render: function(data) {
         var container = E('div', { 'id': 'access-shield-dashboard' });
         var deviceList = ensureArray(data[1], 'devices');
         var bindingList = ensureArray(data[2], 'bindings');
+        var bridgeList  = ensureArray(data[6], 'bridges');
 
         var state = {
             search: '',
             bound: 'all',
             online: 'all',
             conn: 'all',
-            blocked: 'all'
+            blocked: 'all',
+            bridge: 'all'
         };
 
         // Build lookup by MAC
@@ -148,6 +151,12 @@ return view.extend({
                     ipv6: d.ipv6 || '',
                     hostname: d.hostname || (b ? b.name : 'Unknown'),
                     iface: d.iface || (b ? b.iface : ''),
+                    live_ipv4: d.ipv4 || '',
+                    live_iface: d.iface || '',
+                    live_hostname: d.hostname || '',
+                    bound_ipv4: b ? b.ip : '',
+                    bound_iface: b ? b.iface : '',
+                    bound_name: b ? b.name : '',
                     ssid: d.ssid || '',
                     state: d.state,
                     online: d.online,
@@ -168,6 +177,12 @@ return view.extend({
                         ipv6: '',
                         hostname: b.name,
                         iface: b.iface,
+                        live_ipv4: '',
+                        live_iface: '',
+                        live_hostname: '',
+                        bound_ipv4: b.ip,
+                        bound_iface: b.iface,
+                        bound_name: b.name,
                         ssid: '',
                         state: 'STALE',
                         online: false,
@@ -181,7 +196,7 @@ return view.extend({
 
             // Sort by IP
             result.sort(function(a, b) {
-                return ipToLong(a.ipv4) - ipToLong(b.ipv4);
+                return ipToLong(a.bound_ipv4 || a.live_ipv4) - ipToLong(b.bound_ipv4 || b.live_ipv4);
             });
             return result;
         }
@@ -195,9 +210,12 @@ return view.extend({
                 if (state.conn !== 'all' && d.connection !== state.conn) return false;
                 if (state.blocked === 'blocked' && !d.block) return false;
                 if (state.blocked === 'allowed' &&  d.block) return false;
+                if (state.bridge !== 'all') {
+                    if (d.live_iface !== state.bridge && d.bound_iface !== state.bridge) return false;
+                }
                 if (state.search) {
                     var q = state.search.toLowerCase();
-                    var hay = (d.hostname + ' ' + d.ipv4 + ' ' + d.mac + ' ' + d.ssid).toLowerCase();
+                    var hay = (d.hostname + ' ' + d.ipv4 + ' ' + d.mac + ' ' + d.ssid + ' ' + (d.bound_name||'') + ' ' + (d.live_ipv4||'') + ' ' + (d.bound_ipv4||'')).toLowerCase();
                     if (hay.indexOf(q) < 0) return false;
                 }
                 return true;
@@ -370,15 +388,27 @@ function openDetailsModal(d) {
 
 function openEditModal(d, limits) {
     var macLc0 = (d.mac || '').toLowerCase();
-    var existingAlias = (aliasesCache || []).find(function(a) { return (a.ip === d.ipv4); }) || {};
+    var existingAlias = (aliasesCache || []).find(function(a) { return (a.ip === d.live_ipv4 || a.ip === d.bound_ipv4); }) || {};
     var aliasIn = E('input', { 'type': 'text', 'value': existingAlias.name || '', 'placeholder': _('Custom alias (e.g. Front Door Cam)'), 'style': 'width:100%;padding:6px' });
-    var nameIn = E('input', { 'type': 'text', 'value': d.hostname || '', 'style': 'width:100%;padding:6px' });
-    var ipIn = E('input', { 'type': 'text', 'value': d.ipv4 || '', 'style': 'width:100%;padding:6px' });
-    var ifaceSel = E('select', { 'style': 'width:100%;padding:6px' }, [
-        E('option', { 'value': 'br-lan',  'selected': d.iface === 'br-lan'  ? true : null }, 'br-lan'),
-        E('option', { 'value': 'br-lan2', 'selected': d.iface === 'br-lan2' ? true : null }, 'br-lan2'),
-        E('option', { 'value': 'br-lan3', 'selected': d.iface === 'br-lan3' ? true : null }, 'br-lan3')
-    ]);
+    var prefName = d.bound_name || d.live_hostname || '';
+    var prefIp = d.bound_ipv4 || d.live_ipv4 || '';
+    var prefIface = d.bound_iface || d.live_iface || 'br-lan2';
+    var nameIn = E('input', { 'type': 'text', 'value': prefName, 'style': 'width:100%;padding:6px' });
+    var ipIn = E('input', { 'type': 'text', 'value': prefIp, 'style': 'width:100%;padding:6px' });
+    var ifaceSel = E('select', { 'style': 'width:100%;padding:6px' }, (function() {
+        var opts = [];
+        var seen = {};
+        bridgeList.forEach(function(b) {
+            if (b.name && !seen[b.name]) {
+                seen[b.name] = true;
+                opts.push(E('option', { 'value': b.name, 'selected': prefIface === b.name ? true : null }, b.name));
+            }
+        });
+        if (!seen[prefIface]) {
+            opts.push(E('option', { 'value': prefIface, 'selected': true }, prefIface));
+        }
+        return opts;
+    })());
     var leaseSel = E('select', { 'style': 'width:100%;padding:6px' }, [
         E('option', { 'value': '',         'selected': (!d.lease || d.lease === '') ? true : null }, 'inherit (infinite)'),
         E('option', { 'value': '5m',       'selected': d.lease === '5m' ? true : null }, '5 minutes'),
@@ -470,7 +500,7 @@ function openEditModal(d, limits) {
                         // Save alias if changed
                         var aliasVal = aliasIn.value.trim();
                         if (aliasVal) {
-                            return callSetAlias(d.ipv4 || ip, aliasVal, d.mac);
+                            return callSetAlias(ip, aliasVal, d.mac);
                         }
                         return Promise.resolve();
                     }).then(function() {
@@ -489,11 +519,21 @@ function openEditModal(d, limits) {
 function openBindModal(d) {
             var ipInput = E('input', { 'type': 'text', 'value': d.ipv4 || '', 'placeholder': '192.168.200.x', 'style': 'width:100%;padding:6px;' });
             var nameInput = E('input', { 'type': 'text', 'value': d.hostname || '', 'style': 'width:100%;padding:6px;' });
-            var ifaceSelect = E('select', { 'style': 'width:100%;padding:6px;' }, [
-                E('option', { 'value': 'br-lan',  'selected': d.iface === 'br-lan'  ? true : null }, 'br-lan'),
-                E('option', { 'value': 'br-lan2', 'selected': d.iface === 'br-lan2' ? true : null }, 'br-lan2'),
-                E('option', { 'value': 'br-lan3', 'selected': d.iface === 'br-lan3' ? true : null }, 'br-lan3')
-            ]);
+            var ifaceSelect = E('select', { 'style': 'width:100%;padding:6px;' }, (function() {
+                var opts = [];
+                var seen = {};
+                var pref = d.live_iface || 'br-lan2';
+                bridgeList.forEach(function(b) {
+                    if (b.name && !seen[b.name]) {
+                        seen[b.name] = true;
+                        opts.push(E('option', { 'value': b.name, 'selected': pref === b.name ? true : null }, b.name));
+                    }
+                });
+                if (!seen[pref]) {
+                    opts.push(E('option', { 'value': pref, 'selected': true }, pref));
+                }
+                return opts;
+            })());
 
             ui.showModal(_('Bind Device'), [
                 E('div', { 'class': 'cbi-value' }, [
@@ -535,11 +575,20 @@ function openBindModal(d) {
             var macInput  = E('input', { 'type': 'text', 'placeholder': 'aa:bb:cc:dd:ee:ff', 'style': 'width:100%;padding:6px;font-family:monospace' });
             var nameInput = E('input', { 'type': 'text', 'placeholder': _('e.g. Front Door Cam'), 'style': 'width:100%;padding:6px' });
             var ipInput   = E('input', { 'type': 'text', 'placeholder': '192.168.200.x', 'style': 'width:100%;padding:6px' });
-            var ifaceSelect = E('select', { 'style': 'width:100%;padding:6px' }, [
-                E('option', { 'value': 'br-lan2', 'selected': true }, 'br-lan2'),
-                E('option', { 'value': 'br-lan' }, 'br-lan'),
-                E('option', { 'value': 'br-lan3' }, 'br-lan3')
-            ]);
+            var ifaceSelect = E('select', { 'style': 'width:100%;padding:6px' }, (function() {
+                var opts = [];
+                var seen = {};
+                bridgeList.forEach(function(b) {
+                    if (b.name && !seen[b.name]) {
+                        seen[b.name] = true;
+                        opts.push(E('option', { 'value': b.name, 'selected': b.name === 'br-lan2' ? true : null }, b.name));
+                    }
+                });
+                if (!seen['br-lan2']) {
+                    opts.push(E('option', { 'value': 'br-lan2', 'selected': true }, 'br-lan2'));
+                }
+                return opts;
+            })());
 
             ui.showModal(_('Add Device by MAC'), [
                 E('p', { 'style': 'font-size:12px;color:#888;margin:0 0 8px 0' },
@@ -577,22 +626,26 @@ function openBindModal(d) {
                                 ui.addNotification(null, E('p', {}, _('Invalid MAC. Use aa:bb:cc:dd:ee:ff format.')), 'error');
                                 return;
                             }
-                            if (bindingByMac[mac]) {
-                                ui.addNotification(null, E('p', {}, _('MAC already bound. Use Edit on the device row to change it.')), 'warning');
-                                return;
-                            }
                             if (ip && !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
                                 ui.addNotification(null, E('p', {}, _('Invalid IP address.')), 'error');
                                 return;
                             }
 
-                            ui.hideModal();
-                            callBindDevice(mac, ip, ifc, nm)
-                                .then(function() {
-                                    ui.addNotification(null, E('p', {}, _('Device added.')), 'info');
-                                    return new Promise(function(r) { setTimeout(r, 1500); });
-                                })
-                                .then(refresh);
+                            callListBindings().then(function(res) {
+                                var blist = (res && res.bindings) ? res.bindings : [];
+                                var exists = blist.some(function(b) { return (b.mac || '').toLowerCase() === mac; });
+                                if (exists) {
+                                    ui.addNotification(null, E('p', {}, _('MAC already bound. Use Edit on the device row to change it.')), 'warning');
+                                    return;
+                                }
+                                ui.hideModal();
+                                callBindDevice(mac, ip, ifc, nm)
+                                    .then(function() {
+                                        ui.addNotification(null, E('p', {}, _('Device added.')), 'info');
+                                        return new Promise(function(r) { setTimeout(r, 1500); });
+                                    })
+                                    .then(refresh);
+                            });
                         }
                     }, _('Add'))
                 ])
@@ -667,7 +720,16 @@ function openBindModal(d) {
                     { v: 'all', t: _('Any access') },
                     { v: 'allowed', t: _('Allowed') },
                     { v: 'blocked', t: _('Blocked') }
-                ])
+                ]), ' ',
+                mkSelect(_('Bridge'), 'bridge', (function() {
+                    var seen = { 'all': true };
+                    var result = [{ v: 'all', t: _('All bridges') }];
+                    mergedDevices().forEach(function(d) {
+                        if (d.live_iface && !seen[d.live_iface]) { seen[d.live_iface] = true; result.push({ v: d.live_iface, t: d.live_iface }); }
+                        if (d.bound_iface && !seen[d.bound_iface]) { seen[d.bound_iface] = true; result.push({ v: d.bound_iface, t: d.bound_iface }); }
+                    });
+                    return result;
+                })())
             ]);
 
             var rows = [
@@ -696,8 +758,9 @@ function openBindModal(d) {
                 var icon = d.connection === 'wireless' ? '📶' : '🔌';
                 if (!d.online) icon = '💤';
 
+                var displayName = d.bound_name || d.live_hostname || d.live_ipv4 || d.mac;
                 var nameCell = E('span', {}, [
-                    E('strong', {}, d.hostname || d.ipv4 || d.mac),
+                    E('strong', {}, displayName),
                     d.bound ? ' ' : '',
                     d.bound ? badge(_('bound'), '#1e88e5') : badge(_('unbound'), '#e67e22')
                 ]);
@@ -786,9 +849,25 @@ function openBindModal(d) {
                 }, [
                     E('td', { 'class': 'td', 'style': 'text-align:center;font-size:1.2em' }, icon),
                     E('td', { 'class': 'td' }, [ nameCell ]),
-                    E('td', { 'class': 'td' }, [ d.ipv4 || '—' ]),
+                    E('td', { 'class': 'td' }, [
+                        d.live_ipv4 && d.bound_ipv4 && d.live_ipv4 !== d.bound_ipv4
+                            ? E('span', {}, [
+                                E('span', { 'style': 'color:#888' }, d.live_ipv4),
+                                ' → ',
+                                E('span', { 'style': 'color:#4a9eff;font-weight:bold' }, d.bound_ipv4)
+                              ])
+                            : (d.bound_ipv4 || d.live_ipv4 || '—')
+                    ]),
                     E('td', { 'class': 'td', 'style': 'font-family:monospace;font-size:11px' }, [ d.mac ]),
-                    E('td', { 'class': 'td' }, [ d.iface + (d.ssid ? ' (' + d.ssid + ')' : '') ]),
+                    E('td', { 'class': 'td' }, [
+                        d.live_iface && d.bound_iface && d.live_iface !== d.bound_iface
+                            ? E('span', {}, [
+                                E('span', { 'style': 'color:#888' }, d.live_iface),
+                                ' → ',
+                                E('span', { 'style': 'color:#4a9eff;font-weight:bold' }, d.bound_iface)
+                              ])
+                            : E('span', {}, (d.bound_iface || d.live_iface || '—') + (d.ssid ? ' (' + d.ssid + ')' : ''))
+                    ]),
                     E('td', { 'class': 'td' }, [ signalCell ]),
                     E('td', { 'class': 'td' }, [ statusCell ]),
                     E('td', { 'class': 'td' }, [ accessCell ]),
@@ -820,9 +899,10 @@ function openBindModal(d) {
         }
 
         function refresh() {
-            return Promise.all([ callListDevices(), callListBindings(), callGetLimits(), callListAliases(), callListTickets() ]).then(function(r) {
+            return Promise.all([ callListDevices(), callListBindings(), callGetLimits(), callListAliases(), callListTickets(), callListBridges() ]).then(function(r) {
                 deviceList = ensureArray(r[0], 'devices');
                 bindingList = ensureArray(r[1], 'bindings');
+                bridgeList = ensureArray(r[5], 'bridges');
                 bindingByMac = {};
                 bindingList.forEach(function(b) { bindingByMac[(b.mac || '').toLowerCase()] = b; });
                 limitsCache = (function(d) { if (!d) return []; if (Array.isArray(d)) return d; if (typeof d === 'object' && Array.isArray(d.limits)) return d.limits; return []; })(r[2]);
